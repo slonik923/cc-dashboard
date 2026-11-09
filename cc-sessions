@@ -1,0 +1,1411 @@
+#!/usr/bin/env python3
+"""cc-sessions: keep track of your local Claude Code sessions.
+
+A terminal list and a live dashboard (http://localhost:7799) for every Claude
+Code session on this machine: which are open, which need you, which have a PR
+waiting for review, and which are done. Python 3.8+ standard library only;
+`gh` (GitHub CLI) is used for PR states when installed.
+
+    cc-sessions                 sessions grouped by what they need
+    cc-sessions -a              include done and old sessions
+    cc-sessions show ID         details: PRs, links, files, last message
+    cc-sessions done ID [NOTE]  mark solved          (undone ID to reopen)
+    cc-sessions park ID         set aside for later   (unpark ID)
+    cc-sessions note ID TEXT    attach your own note
+    cc-sessions resume ID       cd to the session's folder and `claude --resume`
+    cc-sessions serve           run the dashboard in the foreground
+    cc-sessions open            open the dashboard in the browser
+    cc-sessions install         hooks + background service + app launcher
+    cc-sessions uninstall       remove all of that again
+
+ID is a row number from the last list or any unique prefix of a session id.
+"""
+
+import argparse
+import hashlib
+import json
+import os
+import re
+import secrets
+import shlex
+import shutil
+import subprocess
+import sys
+import threading
+import time
+from datetime import datetime
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from urllib.parse import urlparse
+
+VERSION = "0.2.0"
+HOME = Path.home()
+CLAUDE_DIR = Path(os.environ.get("CLAUDE_CONFIG_DIR", HOME / ".claude"))
+PROJECTS_DIR = CLAUDE_DIR / "projects"
+SETTINGS_FILE = CLAUDE_DIR / "settings.json"
+DATA_DIR = CLAUDE_DIR / "cc-sessions"
+STATE_DIR = DATA_DIR / "state"
+MARKS_FILE = DATA_DIR / "marks.json"
+CACHE_FILE = DATA_DIR / "index-cache.json"
+PR_CACHE_FILE = DATA_DIR / "prs.json"
+LAST_LIST_FILE = DATA_DIR / "last-list.json"
+TOKEN_FILE = DATA_DIR / "token"
+DAEMON_FILE = DATA_DIR / "daemon.json"
+SCRIPT = Path(__file__).resolve()
+WEB_DIR = SCRIPT.parent / "web"
+UNIT_FILE = HOME / ".config" / "systemd" / "user" / "cc-sessions.service"
+DESKTOP_FILE = HOME / ".local" / "share" / "applications" / "cc-sessions.desktop"
+DEFAULT_PORT = int(os.environ.get("CC_SESSIONS_PORT", "7799"))
+CACHE_VERSION = 4
+DEFAULT_DAYS = 14
+QUIET_AFTER = 15 * 60  # "working" with no activity for this long => probably interrupted
+HOOK_EVENTS = ["SessionStart", "UserPromptSubmit", "PostToolUse", "Notification", "Stop", "SessionEnd"]
+
+# ------------------------------------------------------------------ states
+# key: (group, label). Groups are shown in this order.
+GROUPS = [
+    ("needs", "Needs you"),
+    ("review", "PRs to look at"),
+    ("working", "Working"),
+    ("waiting", "Waiting"),
+    ("yours", "Your turn"),
+    ("closed", "Closed, not done"),
+    ("done", "Done"),
+]
+STATES = {
+    "permission": ("needs", "Permission needed"),
+    "question": ("needs", "Question for you"),
+    "plan": ("needs", "Plan to approve"),
+    "decision": ("needs", "Decision needed"),
+    "error": ("needs", "Error"),
+    "ci_failing": ("review", "CI failing"),
+    "changes_requested": ("review", "Changes requested"),
+    "pr_conflict": ("review", "PR has conflicts"),
+    "pr_review": ("review", "PR ready for review"),
+    "working": ("working", "Working"),
+    "ci_pending": ("waiting", "CI running"),
+    "parked": ("waiting", "Parked"),
+    "idle": ("yours", "Finished, your turn"),
+    "quiet": ("yours", "Quiet, interrupted?"),
+    "closed_midtask": ("closed", "Closed mid-task"),
+    "closed": ("closed", "Closed"),
+    "pr_merged": ("done", "PR merged"),
+    "done": ("done", "Done"),
+}
+GROUP_ORDER = {g: i for i, (g, _) in enumerate(GROUPS)}
+NOTIFY_STATES = {"permission", "question", "plan", "decision", "error",
+                 "ci_failing", "changes_requested", "pr_conflict", "pr_review", "idle"}
+
+# --------------------------------------------------------------------------- utils
+
+USE_COLOR = sys.stdout.isatty() and os.environ.get("NO_COLOR") is None
+ANSI = {"needs": "1;31", "review": "1;35", "working": "1;33", "waiting": "1;34",
+        "yours": "1;32", "closed": "1;90", "done": "2"}
+
+
+def c(text, code):
+    return f"\033[{code}m{text}\033[0m" if USE_COLOR else text
+
+
+def bold(t):
+    return c(t, "1")
+
+
+def dim(t):
+    return c(t, "2")
+
+
+def load_json(path, default):
+    try:
+        with open(path, encoding="utf-8") as f:
+            val = json.load(f)
+    except (OSError, ValueError):
+        return default
+    if default is not None and not isinstance(val, type(default)):
+        return default
+    return val
+
+
+def save_json(path, data):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=1)
+    os.replace(tmp, path)
+
+
+def parse_ts(s):
+    if not s:
+        return 0.0
+    try:
+        return datetime.fromisoformat(str(s).replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return 0.0
+
+
+def ago(ts):
+    if not ts:
+        return "?"
+    d = time.time() - ts
+    if d < 60:
+        return "now"
+    if d < 3600:
+        return f"{int(d // 60)}m"
+    if d < 86400:
+        return f"{int(d // 3600)}h"
+    return f"{int(d // 86400)}d"
+
+
+def short_path(p):
+    if not p:
+        return "?"
+    s, h = str(p), str(HOME)
+    return "~" + s[len(h):] if s == h or s.startswith(h + "/") else s
+
+
+def one_line(s, n):
+    s = " ".join((s or "").split())
+    return s if len(s) <= n else s[: n - 1] + "…"
+
+
+# ------------------------------------------------------------------ processes
+
+def _stat_fields(pid):
+    with open(f"/proc/{int(pid)}/stat") as f:
+        return f.read().rsplit(")", 1)[1].split()
+
+
+def proc_start_time(pid):
+    try:
+        return _stat_fields(pid)[19]
+    except (OSError, IndexError, ValueError, TypeError):
+        return None
+
+
+def proc_ppid(pid):
+    try:
+        return int(_stat_fields(pid)[1])
+    except (OSError, IndexError, ValueError, TypeError):
+        return None
+
+
+def proc_cmdline(pid):
+    try:
+        with open(f"/proc/{int(pid)}/cmdline", "rb") as f:
+            return [a.decode(errors="replace") for a in f.read().split(b"\0") if a]
+    except (OSError, ValueError, TypeError):
+        return []
+
+
+def is_claude_cmd(argv):
+    if not argv:
+        return False
+    exe = os.path.basename(argv[0])
+    if exe == "claude":
+        return True
+    return exe.startswith("node") and any(
+        "claude-code" in a or a.endswith("/claude") for a in argv[1:])
+
+
+def find_claude_ancestor():
+    pid = os.getppid()
+    for _ in range(8):
+        if not pid or pid <= 1:
+            return None
+        if is_claude_cmd(proc_cmdline(pid)):
+            return pid
+        pid = proc_ppid(pid)
+    return None
+
+
+def pid_alive(pid, start):
+    st = proc_start_time(pid) if pid else None
+    return st is not None and (start is None or st == start)
+
+
+def running_claude_processes():
+    out = []
+    try:
+        entries = os.listdir("/proc")
+    except OSError:
+        return out
+    for name in entries:
+        if not name.isdigit():
+            continue
+        argv = proc_cmdline(name)
+        if not is_claude_cmd(argv):
+            continue
+        try:
+            cwd = os.readlink(f"/proc/{name}/cwd")
+        except OSError:
+            cwd = None
+        out.append((int(name), cwd, argv))
+    return out
+
+
+# ----------------------------------------------------------------- transcripts
+
+PR_RE = re.compile(r"https://github\.com/[\w.-]+/[\w.-]+/pull/\d+")
+LINK_RES = [
+    ("artifact", re.compile(r"https://claude\.ai/(?:code/)?artifacts?/[\w-]+")),
+    ("notion", re.compile(r"https://(?:www\.)?notion\.so/[\w/?=&%-]+")),
+    ("linear", re.compile(r"https://linear\.app/[\w-]+/issue/[A-Z]+-\d+")),
+    ("figma", re.compile(r"https://(?:www\.)?figma\.com/(?:design|file|board|slides)/[\w/-]+")),
+    ("gdoc", re.compile(r"https://docs\.google\.com/[\w/.-]+")),
+]
+WRITE_TOOLS = {"Write", "Edit", "MultiEdit", "NotebookEdit"}
+CREATING_TOOL_HINTS = ("create", "publish", "Artifact", "save_", "push", "Bash:create")
+DECISION_RE = re.compile(
+    r"\b(should I|shall I|do you want|would you like|want me to|which (?:one|option|approach)"
+    r"|your call|please (?:confirm|decide|choose|pick)|let me know (?:which|whether|if you want))\b",
+    re.I)
+
+
+def block_text(content):
+    if isinstance(content, str):
+        return content
+    parts = []
+    for b in content or []:
+        if isinstance(b, dict):
+            if b.get("type") == "text":
+                parts.append(b.get("text", ""))
+            elif b.get("type") == "tool_result":
+                parts.append(block_text(b.get("content")))
+        elif isinstance(b, str):
+            parts.append(b)
+    return "\n".join(parts)
+
+
+def message_content(entry):
+    msg = entry.get("message")
+    return msg.get("content") if isinstance(msg, dict) else None
+
+
+def is_real_prompt(entry):
+    if entry.get("isMeta") or entry.get("isSidechain"):
+        return False
+    content = message_content(entry)
+    if isinstance(content, list) and any(
+            isinstance(b, dict) and b.get("type") == "tool_result" for b in content):
+        return False
+    t = block_text(content).strip()
+    return bool(t) and not t.startswith(
+        ("<command-", "<local-command", "<system-reminder", "Caveat:", "[Request interrupted"))
+
+
+def asks_decision(text):
+    tail = (text or "").strip()
+    if not tail:
+        return False
+    last_para = tail.split("\n\n")[-1]
+    return last_para.rstrip().endswith("?") or bool(DECISION_RE.search(last_para))
+
+
+def parse_transcript(path):
+    info = {
+        "id": path.stem, "cwd": None, "branch": None, "title": None, "ai_title": None,
+        "summary": None, "first_prompt": None, "last_prompt": None, "prompts": 0,
+        "first_ts": 0.0, "last_ts": 0.0, "last_role": None, "last_text": "",
+        "api_error": False, "pending_tool": None, "prs": [], "links": {}, "files": [],
+    }
+    prs, files, links, tool_names, pending = {}, {}, {}, {}, {}
+
+    def add_links(text):
+        for m in PR_RE.findall(text):
+            prs.setdefault(m, None)
+        for kind, rx in LINK_RES:
+            for m in rx.findall(text):
+                links.setdefault(kind, {}).setdefault(m.rstrip(").,"), None)
+
+    try:
+        f = open(path, encoding="utf-8", errors="replace")
+    except OSError:
+        return info
+    with f:
+        for line in f:
+            try:
+                e = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(e, dict):
+                continue
+            t = e.get("type")
+            if t == "custom-title":
+                info["title"] = e.get("customTitle") or info["title"]
+                continue
+            if t == "ai-title":
+                info["ai_title"] = e.get("aiTitle") or info["ai_title"]
+                continue
+            if t == "summary":
+                info["summary"] = e.get("summary") or info["summary"]
+                continue
+            if t not in ("user", "assistant") or e.get("isSidechain"):
+                continue
+            ts = parse_ts(e.get("timestamp"))
+            if ts:
+                info["first_ts"] = info["first_ts"] or ts
+                info["last_ts"] = max(info["last_ts"], ts)
+            info["cwd"] = e.get("cwd") or info["cwd"]
+            info["branch"] = e.get("gitBranch") or info["branch"]
+            content = message_content(e)
+
+            if t == "user":
+                if isinstance(content, list):
+                    for b in content:
+                        if isinstance(b, dict) and b.get("type") == "tool_result":
+                            tid = b.get("tool_use_id")
+                            pending.pop(tid, None)
+                            name = tool_names.get(tid, "")
+                            if any(h in name for h in CREATING_TOOL_HINTS):
+                                add_links(block_text(b.get("content")))
+                if is_real_prompt(e):
+                    text = block_text(content)
+                    info["prompts"] += 1
+                    info["first_prompt"] = info["first_prompt"] or text
+                    info["last_prompt"] = text
+                    info["last_role"] = "user"
+                    info["last_text"] = text
+                    info["api_error"] = False
+                continue
+
+            if not isinstance(content, list):
+                continue
+            info["api_error"] = bool(e.get("isApiErrorMessage") or e.get("error"))
+            for b in content:
+                if not isinstance(b, dict):
+                    continue
+                if b.get("type") == "text" and b.get("text", "").strip():
+                    info["last_role"] = "assistant"
+                    info["last_text"] = b["text"]
+                    add_links(b["text"])
+                elif b.get("type") == "tool_use":
+                    name = b.get("name", "")
+                    inp = b.get("input") if isinstance(b.get("input"), dict) else {}
+                    tool_names[b.get("id")] = name
+                    pending[b.get("id")] = name
+                    info["last_role"] = "tool"
+                    if name in WRITE_TOOLS:
+                        fp = inp.get("file_path") or inp.get("notebook_path")
+                        if isinstance(fp, str):
+                            files[fp] = None
+                    elif name == "Bash":
+                        cmd = str(inp.get("command", ""))
+                        if "gh pr create" in cmd or "git push" in cmd:
+                            tool_names[b.get("id")] = "Bash:create"
+    info["pending_tool"] = list(pending.values())[-1] if pending else None
+    info["prs"] = list(prs)
+    info["links"] = {k: list(v) for k, v in links.items()}
+    info["files"] = list(files)
+    return info
+
+
+_scan_lock = threading.Lock()
+
+
+def scan_transcripts():
+    with _scan_lock:
+        cache = load_json(CACHE_FILE, {})
+        if cache.get("v") != CACHE_VERSION:
+            cache = {"v": CACHE_VERSION, "files": {}}
+        entries = cache["files"]
+        seen, sessions, dirty = set(), {}, False
+        if PROJECTS_DIR.is_dir():
+            for path in PROJECTS_DIR.glob("*/*.jsonl"):
+                try:
+                    st = path.stat()
+                except OSError:
+                    continue
+                key = str(path)
+                seen.add(key)
+                sig = [st.st_mtime, st.st_size]
+                hit = entries.get(key)
+                if hit and hit.get("sig") == sig:
+                    info = hit["info"]
+                else:
+                    info = parse_transcript(path)
+                    entries[key] = {"sig": sig, "info": info}
+                    dirty = True
+                if info["prompts"] == 0:
+                    continue
+                prev = sessions.get(info["id"])
+                if not prev or info["last_ts"] > prev["last_ts"]:
+                    sessions[info["id"]] = dict(info)
+        for k in list(entries):
+            if k not in seen:
+                del entries[k]
+                dirty = True
+        if dirty:
+            try:
+                save_json(CACHE_FILE, cache)
+            except OSError:
+                pass
+        return sessions
+
+
+# ------------------------------------------------------------------- PRs (gh)
+
+_pr_lock = threading.Lock()
+FAIL = {"FAILURE", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "ERROR", "STARTUP_FAILURE"}
+
+
+def summarize_checks(rollup):
+    if not rollup:
+        return "none"
+    failing = pending = False
+    for ch in rollup:
+        if not isinstance(ch, dict):
+            continue
+        concl = (ch.get("conclusion") or "").upper()
+        state = (ch.get("state") or "").upper()
+        status = (ch.get("status") or "").upper()
+        if concl in FAIL or state in ("FAILURE", "ERROR"):
+            failing = True
+        elif (status and status != "COMPLETED") or state in ("PENDING", "EXPECTED"):
+            pending = True
+    return "failing" if failing else "pending" if pending else "passing"
+
+
+def fetch_pr(url):
+    if not shutil.which("gh"):
+        return {"error": "gh not installed"}
+    try:
+        r = subprocess.run(
+            ["gh", "pr", "view", url, "--json",
+             "number,title,state,isDraft,reviewDecision,mergeable,statusCheckRollup"],
+            capture_output=True, text=True, timeout=20)
+    except (OSError, subprocess.SubprocessError) as e:
+        return {"error": str(e)}
+    if r.returncode != 0:
+        return {"error": one_line(r.stderr, 200) or "gh failed"}
+    try:
+        d = json.loads(r.stdout)
+    except ValueError:
+        return {"error": "bad gh output"}
+    return {
+        "number": d.get("number"), "title": d.get("title"),
+        "state": (d.get("state") or "").lower(),  # open | closed | merged
+        "draft": bool(d.get("isDraft")),
+        "review": (d.get("reviewDecision") or "").lower(),  # approved | changes_requested | review_required
+        "mergeable": (d.get("mergeable") or "").lower(),  # mergeable | conflicting | unknown
+        "checks": summarize_checks(d.get("statusCheckRollup")),
+    }
+
+
+def pr_cache():
+    with _pr_lock:
+        return load_json(PR_CACHE_FILE, {})
+
+
+def refresh_prs(urls, force=False):
+    """Refresh stale entries for these PR urls. Returns True if anything changed."""
+    cache = pr_cache()
+    now, changed, fetched = time.time(), False, {}
+    for url in urls:
+        ent = cache.get(url) or {}
+        data = ent.get("data") or {}
+        if data.get("error"):
+            ttl = 600
+        elif data.get("state") in ("merged", "closed"):
+            ttl = 6 * 3600
+        elif data.get("checks") == "pending":
+            ttl = 60
+        else:
+            ttl = 180
+        if force or now - ent.get("fetched", 0) > ttl:
+            new = fetch_pr(url)
+            changed = changed or new != data
+            fetched[url] = {"fetched": now, "data": new}
+    if fetched:
+        with _pr_lock:
+            merged = load_json(PR_CACHE_FILE, {})
+            merged.update(fetched)
+            save_json(PR_CACHE_FILE, merged)
+    return changed
+
+
+def pr_info(url, cache):
+    m = re.match(r"https://github\.com/([\w.-]+/[\w.-]+)/pull/(\d+)", url)
+    base = {"url": url, "repo": m.group(1) if m else "", "number": int(m.group(2)) if m else None}
+    data = (cache.get(url) or {}).get("data") or {}
+    if data.get("error"):
+        base["error"] = data["error"]
+    elif data:
+        base.update(data)
+    return base
+
+
+# ----------------------------------------------------------------- classify
+
+def load_states():
+    states = {}
+    if STATE_DIR.is_dir():
+        for p in STATE_DIR.glob("*.json"):
+            s = load_json(p, None)
+            if isinstance(s, dict) and s.get("session_id"):
+                states[s["session_id"]] = s
+    return states
+
+
+def pr_state(prs):
+    """Most pressing state derived from this session's PRs, or None."""
+    known = [p for p in prs if p.get("state")]
+    open_prs = [p for p in known if p["state"] == "open"]
+    if open_prs:
+        if any(p.get("checks") == "failing" for p in open_prs):
+            return "ci_failing"
+        if any(p.get("review") == "changes_requested" for p in open_prs):
+            return "changes_requested"
+        if any(p.get("mergeable") == "conflicting" for p in open_prs):
+            return "pr_conflict"
+        if any(p.get("checks") == "pending" for p in open_prs):
+            return "ci_pending"
+        return "pr_review"
+    if any(p["state"] == "merged" for p in known):
+        return "pr_merged"
+    return None
+
+
+def classify(s, hook, alive):
+    mark = s.get("mark") or {}
+    if mark.get("done"):
+        return "done"
+    pending = s.get("pending_tool")
+    status = (hook or {}).get("status")
+    hook_ts = (hook or {}).get("ts") or 0
+    if hook and hook_ts + 1 < s.get("last_ts", 0) and status not in ("working", "permission"):
+        status = None  # transcript moved on after the last hook event
+
+    if alive:
+        if status == "permission":
+            return "permission"
+        if pending == "AskUserQuestion" or status == "question":
+            return "question"
+        if pending == "ExitPlanMode":
+            return "plan"
+        quiet = time.time() - max(hook_ts, s.get("last_ts", 0))
+        if status == "working" or (status is None and s.get("last_role") in ("user", "tool")):
+            if quiet < (QUIET_AFTER if status == "working" else 120):
+                return "working"
+            if status is None and pending:
+                return "permission"  # no hooks: a tool call is stuck, most likely waiting for approval
+            return "quiet"
+    else:
+        if pending == "AskUserQuestion":
+            return "question"
+        if pending == "ExitPlanMode":
+            return "plan"
+
+    if mark.get("parked"):
+        return "parked"
+    if s.get("api_error"):
+        return "error"
+    if s.get("last_role") == "assistant" and asks_decision(s.get("last_text")):
+        return "decision"
+    prs = pr_state(s.get("pr_details") or [])
+    if prs == "pr_merged" and not alive:
+        return "pr_merged"
+    if prs and prs != "pr_merged":
+        return prs
+    if alive:
+        return "idle"
+    return "closed_midtask" if s.get("last_role") in ("user", "tool") else "closed"
+
+
+def title_of(s):
+    return (s.get("title") or s.get("ai_title") or s.get("summary")
+            or one_line(s.get("first_prompt"), 90) or "(untitled)")
+
+
+def collect(include_all=False, days=DEFAULT_DAYS):
+    sessions = scan_transcripts()
+    hooks = load_states()
+    marks = load_json(MARKS_FILE, {})
+    procs = running_claude_processes()
+    prc = pr_cache()
+
+    live_cwds = {cwd for _, cwd, _ in procs if cwd}
+    argv_blob = " ".join(" ".join(a) for _, _, a in procs)
+    newest_by_cwd = {}
+    for s in sessions.values():
+        if s["cwd"] in live_cwds and s["id"] not in hooks:
+            cur = newest_by_cwd.get(s["cwd"])
+            if not cur or s["last_ts"] > cur["last_ts"]:
+                newest_by_cwd[s["cwd"]] = s
+    guessed_live = {s["id"] for s in newest_by_cwd.values()}
+
+    rows, cutoff = [], time.time() - days * 86400
+    for sid, s in sessions.items():
+        hook = hooks.get(sid)
+        if hook and hook.get("pid"):
+            alive = pid_alive(hook["pid"], hook.get("pid_start")) and hook.get("status") != "ended"
+            s["live_source"] = "hook"
+        else:
+            alive = sid in argv_blob or sid in guessed_live
+            s["live_source"] = "guess"
+        s["alive"] = alive
+        s["mark"] = marks.get(sid) or {}
+        s["pr_details"] = [pr_info(u, prc) for u in s["prs"]]
+        st = classify(s, hook, alive)
+        s["state"] = st
+        s["group"], s["label"] = STATES[st]
+        s["hook_message"] = (hook or {}).get("message") if st == "permission" else None
+        s["display_title"] = title_of(s)
+        if not include_all:
+            if s["group"] == "done":
+                continue
+            if s["group"] == "closed" and s["last_ts"] < cutoff:
+                continue
+        rows.append(s)
+    rows.sort(key=lambda r: (GROUP_ORDER[r["group"]], -r["last_ts"]))
+    return rows
+
+
+# ------------------------------------------------------------------- marks
+
+def set_mark(sid, **kw):
+    marks = load_json(MARKS_FILE, {})
+    m = marks.get(sid, {})
+    for k, v in kw.items():
+        if v is None:
+            m.pop(k, None)
+        else:
+            m[k] = v
+    if m:
+        marks[sid] = m
+    else:
+        marks.pop(sid, None)
+    save_json(MARKS_FILE, marks)
+
+
+def apply_action(sid, action, text=None):
+    now = time.strftime("%Y-%m-%d %H:%M")
+    if action == "done":
+        set_mark(sid, done=True, done_at=now, parked=None, parked_at=None)
+    elif action == "undone":
+        set_mark(sid, done=None, done_at=None)
+    elif action == "park":
+        set_mark(sid, parked=True, parked_at=now)
+    elif action == "unpark":
+        set_mark(sid, parked=None, parked_at=None)
+    elif action == "note":
+        set_mark(sid, note=(text or "").strip()[:500] or None)
+    else:
+        raise ValueError(action)
+
+
+# ------------------------------------------------------------- desktop glue
+
+GRAPHICAL_VARS = ("DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY", "DBUS_SESSION_BUS_ADDRESS",
+                  "XDG_RUNTIME_DIR", "XDG_CURRENT_DESKTOP")
+
+
+def desktop_env():
+    """Environment with the graphical session's variables (a systemd service may start before them)."""
+    env = dict(os.environ)
+    if env.get("DISPLAY") or env.get("WAYLAND_DISPLAY"):
+        return env
+    try:
+        out = subprocess.run(["systemctl", "--user", "show-environment"],
+                             capture_output=True, text=True, timeout=5).stdout
+    except (OSError, subprocess.SubprocessError):
+        return env
+    for line in out.splitlines():
+        k, _, v = line.partition("=")
+        if k in GRAPHICAL_VARS and k not in env:
+            env[k] = v
+    return env
+
+
+def notify(title, body, urgent=False):
+    if os.environ.get("CC_SESSIONS_NOTIFY", "1") == "0" or not shutil.which("notify-send"):
+        return
+    cmd = ["notify-send", "-a", "Claude Code", "-i", "utilities-terminal"]
+    if urgent:
+        cmd += ["-u", "critical"]
+    try:
+        subprocess.Popen(cmd + [title, body], env=desktop_env(),
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except OSError:
+        pass
+
+
+TERMINALS = [  # (binary, args before the command)
+    ("gnome-terminal", ["--"]),
+    ("ptyxis", ["--new-window", "--"]),
+    ("kgx", ["-e"]),
+    ("konsole", ["-e"]),
+    ("xfce4-terminal", ["-x"]),
+    ("tilix", ["-e"]),
+    ("kitty", []),
+    ("alacritty", ["-e"]),
+    ("x-terminal-emulator", ["-e"]),
+    ("xterm", ["-e"]),
+]
+
+
+def terminal_command(cwd, argv):
+    script = f"cd {shlex.quote(cwd)} && {shlex.join(argv)}; exec \"${{SHELL:-bash}}\""
+    inner = ["bash", "-lc", script]
+    custom = os.environ.get("CC_SESSIONS_TERMINAL")
+    candidates = [(shlex.split(custom)[0], shlex.split(custom)[1:])] if custom else TERMINALS
+    for binary, pre in candidates:
+        if shutil.which(binary):
+            return [binary] + pre + inner
+    return None
+
+
+def open_terminal(cwd, argv):
+    """Open a new terminal window running argv in cwd; leaves a shell open afterwards."""
+    cmd = terminal_command(cwd, argv)
+    if not cmd:
+        raise RuntimeError("No terminal emulator found; set CC_SESSIONS_TERMINAL")
+    subprocess.Popen(cmd, cwd=cwd if os.path.isdir(cwd) else None, env=desktop_env(),
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    return cmd[0]
+
+
+def open_path(target):
+    if shutil.which("xdg-open"):
+        subprocess.Popen(["xdg-open", target], env=desktop_env(), stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, start_new_session=True)
+
+
+# ------------------------------------------------------------------- server
+
+def session_json(s):
+    keep = ("id", "display_title", "title", "cwd", "branch", "first_ts", "last_ts", "prompts",
+            "last_role", "pending_tool", "links", "files", "alive", "live_source",
+            "mark", "pr_details", "state", "group", "label", "hook_message")
+    d = {k: s.get(k) for k in keep}
+    d["last_text"] = (s.get("last_text") or "")[-4000:]
+    d["last_prompt"] = (s.get("last_prompt") or "")[-1500:]
+    d["project"] = os.path.basename(s.get("cwd") or "") or "?"
+    d["cwd_short"] = short_path(s.get("cwd"))
+    return d
+
+
+class Dashboard:
+    def __init__(self, port):
+        self.port = port
+        self.token = self._token()
+        self.lock = threading.Lock()
+        self.snapshot = {"sessions": [], "generated": 0}
+        self.etag = ""
+        self.prev_states = None
+        self.wake = threading.Event()
+
+    @staticmethod
+    def _token():
+        try:
+            tok = TOKEN_FILE.read_text().strip()
+        except OSError:
+            tok = ""
+        if not tok:
+            tok = secrets.token_urlsafe(24)
+            TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
+            TOKEN_FILE.write_text(tok)
+            os.chmod(TOKEN_FILE, 0o600)
+        return tok
+
+    def refresh(self):
+        rows = collect(include_all=True, days=10 ** 6)
+        sessions = [session_json(s) for s in rows]
+        counts = {g: 0 for g, _ in GROUPS}
+        for s in sessions:
+            counts[s["group"]] += 1
+        snap = {
+            "version": VERSION, "sessions": sessions, "counts": counts,
+            "groups": [{"key": g, "label": l} for g, l in GROUPS],
+            "states": {k: {"group": g, "label": l} for k, (g, l) in STATES.items()},
+            "gh": bool(shutil.which("gh")), "hooks": hooks_installed(),
+            "default_days": DEFAULT_DAYS,
+        }
+        etag = hashlib.sha1(json.dumps(snap, sort_keys=True).encode()).hexdigest()[:16]
+        snap["generated"] = time.time()
+        with self.lock:
+            self.snapshot, self.etag = snap, etag
+        self._notify_changes(rows)
+        return rows
+
+    def _notify_changes(self, rows):
+        cur = {r["id"]: r["state"] for r in rows}
+        prev, self.prev_states = self.prev_states, cur
+        if prev is None:
+            return  # first scan after start: don't replay everything
+        for r in rows:
+            st, before = r["state"], prev.get(r["id"])
+            if st == before or st not in NOTIFY_STATES:
+                continue
+            if st == "idle" and before != "working":
+                continue
+            body = r.get("hook_message") or one_line(r.get("last_text"), 160)
+            notify(f"{STATES[st][1]} · {title_of(r)[:60]}", body, urgent=r["group"] == "needs")
+
+    def heartbeat(self):
+        try:
+            save_json(DAEMON_FILE, {"pid": os.getpid(), "port": self.port, "ts": time.time()})
+        except OSError:
+            pass
+
+    def scan_loop(self):
+        while True:
+            self.wake.wait(2)
+            self.wake.clear()
+            try:
+                self.refresh()
+                self.heartbeat()
+            except Exception as e:  # keep the daemon alive no matter what
+                print(f"scan error: {e!r}", file=sys.stderr)
+
+    def pr_loop(self):
+        while True:
+            try:
+                with self.lock:
+                    sessions = self.snapshot["sessions"]
+                urls = []
+                for s in sessions:
+                    if s["group"] != "done" or time.time() - s["last_ts"] < 2 * 86400:
+                        urls.extend(p["url"] for p in s["pr_details"])
+                if urls and refresh_prs(list(dict.fromkeys(urls))):
+                    self.wake.set()
+            except Exception as e:
+                print(f"pr error: {e!r}", file=sys.stderr)
+            time.sleep(20)
+
+    def find(self, sid):
+        with self.lock:
+            for s in self.snapshot["sessions"]:
+                if s["id"] == sid:
+                    return s
+        return None
+
+    def handle_action(self, body):
+        sid, action = body.get("id"), body.get("action")
+        s = self.find(sid) if isinstance(sid, str) else None
+        if not s:
+            return 404, {"error": "unknown session"}
+        result = {"ok": True}
+        if action in ("done", "undone", "park", "unpark", "note"):
+            text = body.get("text")
+            apply_action(sid, action, text if isinstance(text, str) else None)
+        elif action == "resume":
+            claude = shutil.which("claude") or "claude"
+            try:
+                result["terminal"] = open_terminal(s["cwd"] or str(HOME), [claude, "--resume", sid])
+            except (RuntimeError, OSError) as e:
+                return 500, {"error": str(e)}
+            if s["mark"].get("done") or s["mark"].get("parked"):
+                set_mark(sid, done=None, done_at=None, parked=None, parked_at=None)
+        elif action == "open_folder":
+            open_path(s["cwd"] or str(HOME))
+        elif action == "refresh_prs":
+            refresh_prs([p["url"] for p in s["pr_details"]], force=True)
+        else:
+            return 400, {"error": "unknown action"}
+        self.refresh()
+        return 200, result
+
+    def make_handler(self):
+        dash = self
+
+        class Handler(BaseHTTPRequestHandler):
+            server_version = "cc-sessions/" + VERSION
+
+            def log_message(self, *a):
+                pass
+
+            def _host_ok(self):
+                host = (self.headers.get("Host") or "").lower()
+                return host in (f"127.0.0.1:{dash.port}", f"localhost:{dash.port}")
+
+            def _send(self, code, body, ctype="application/json", extra=None):
+                data = body if isinstance(body, bytes) else json.dumps(body).encode()
+                self.send_response(code)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.send_header("Referrer-Policy", "no-referrer")
+                for k, v in (extra or {}).items():
+                    self.send_header(k, v)
+                self.end_headers()
+                self.wfile.write(data)
+
+            def do_GET(self):
+                if not self._host_ok():
+                    return self._send(403, {"error": "bad host"})
+                path = urlparse(self.path).path
+                if path in ("/", "/index.html"):
+                    try:
+                        html = (WEB_DIR / "index.html").read_text(encoding="utf-8")
+                    except OSError:
+                        return self._send(500, {"error": "web/index.html missing"})
+                    html = html.replace("__CC_TOKEN__", dash.token)
+                    return self._send(200, html.encode(), "text/html; charset=utf-8", {
+                        "Content-Security-Policy":
+                            "default-src 'self'; script-src 'unsafe-inline'; "
+                            "style-src 'unsafe-inline'; img-src 'self' data:; "
+                            "connect-src 'self'; frame-ancestors 'none'"})
+                if path == "/api/sessions":
+                    if self.headers.get("X-CC-Token") != dash.token:
+                        return self._send(403, {"error": "bad token"})
+                    with dash.lock:
+                        snap, etag = dash.snapshot, dash.etag
+                    if self.headers.get("If-None-Match") == etag:
+                        self.send_response(304)
+                        self.send_header("ETag", etag)
+                        self.end_headers()
+                        return
+                    return self._send(200, snap, extra={"ETag": etag})
+                if path == "/api/health":
+                    return self._send(200, {"ok": True, "version": VERSION})
+                self._send(404, {"error": "not found"})
+
+            def do_POST(self):
+                if not self._host_ok() or self.headers.get("X-CC-Token") != dash.token:
+                    return self._send(403, {"error": "forbidden"})
+                if urlparse(self.path).path != "/api/action":
+                    return self._send(404, {"error": "not found"})
+                try:
+                    n = min(int(self.headers.get("Content-Length") or 0), 65536)
+                    body = json.loads(self.rfile.read(n) or b"{}")
+                    if not isinstance(body, dict):
+                        raise ValueError
+                except ValueError:
+                    return self._send(400, {"error": "bad json"})
+                code, resp = dash.handle_action(body)
+                self._send(code, resp)
+
+        return Handler
+
+    def serve(self):
+        self.refresh()
+        self.heartbeat()
+        threading.Thread(target=self.scan_loop, daemon=True).start()
+        threading.Thread(target=self.pr_loop, daemon=True).start()
+        httpd = ThreadingHTTPServer(("127.0.0.1", self.port), self.make_handler())
+        httpd.daemon_threads = True
+        print(f"cc-sessions dashboard on http://localhost:{self.port}", flush=True)
+        try:
+            httpd.serve_forever()
+        except KeyboardInterrupt:
+            pass
+        finally:
+            try:
+                DAEMON_FILE.unlink()
+            except OSError:
+                pass
+
+
+def daemon_running():
+    d = load_json(DAEMON_FILE, {})
+    return bool(d) and time.time() - (d.get("ts") or 0) < 30 and pid_alive(d.get("pid"), None)
+
+
+# -------------------------------------------------------------------- CLI
+
+def format_rows(rows, width, numbered):
+    out, current = [], None
+    lw = max([len(r["label"]) for r in rows] + [10])
+    for s in rows:
+        if s["group"] != current:
+            current = s["group"]
+            out.append("\n" + c(dict(GROUPS)[current].upper(), ANSI[current]) + "\n")
+        numbered.append(s["id"])
+        proj = short_path(s["cwd"])
+        proj = proj if len(proj) <= 28 else "…" + proj[-27:]
+        live = c("●", "32") if s["alive"] else dim("○")
+        left = (f"{len(numbered):>3} {live} {s['id'][:8]}  {ago(s['last_ts']):>4}  "
+                f"{s['label']:<{lw}}  {proj:<28} ")
+        badges = []
+        for p in s["pr_details"]:
+            st = p.get("state") or "?"
+            badges.append(f"#{p['number']}:{'draft' if p.get('draft') and st == 'open' else st}")
+        for kind, urls in s["links"].items():
+            badges.append(f"{kind}×{len(urls)}")
+        if s["files"]:
+            badges.append(f"files×{len(s['files'])}")
+        b = " ".join(badges)
+        note = f"  [{s['mark']['note']}]" if s["mark"].get("note") else ""
+        room = max(20, width - len(left) - len(b) - 2)
+        out.append(left + bold(one_line(title_of(s) + note, room)) + ("  " + dim(b) if b else "") + "\n")
+        if s["group"] == "needs":
+            detail = s.get("hook_message") or (s["last_text"] if s["last_role"] == "assistant" else "")
+            if detail:
+                out.append(dim("        └ " + one_line(detail, width - 12)) + "\n")
+    return "".join(out)
+
+
+def cmd_list(args):
+    rows = collect(args.all, args.days)
+    width = shutil.get_terminal_size((120, 20)).columns
+    numbered = []
+    if not rows:
+        print("No sessions. (Use -a to include done and older ones.)")
+    else:
+        sys.stdout.write(format_rows(rows, width, numbered))
+    try:
+        save_json(LAST_LIST_FILE, numbered)
+    except OSError:
+        pass
+    if rows and not hooks_installed():
+        print(dim("\nTip: `cc-sessions install` adds hooks (exact live states) and the dashboard."))
+    elif daemon_running():
+        print(dim(f"\nDashboard: http://localhost:{load_json(DAEMON_FILE, {}).get('port', DEFAULT_PORT)}"))
+
+
+def resolve(ref):
+    if ref.isdigit() and len(ref) < 4:
+        listed = load_json(LAST_LIST_FILE, [])
+        i = int(ref) - 1
+        if 0 <= i < len(listed) and isinstance(listed[i], str):
+            ref = listed[i]
+    rows = collect(include_all=True, days=10 ** 6)
+    hits = [r for r in rows if r["id"].startswith(ref)]
+    if not hits:
+        sys.exit(f"No session matches '{ref}'.")
+    if len(hits) > 1:
+        sys.exit(f"'{ref}' is ambiguous: " + ", ".join(h["id"][:12] for h in hits))
+    return hits[0]
+
+
+def cmd_show(args):
+    s = resolve(args.id)
+    if s["prs"] and not args.no_gh:
+        refresh_prs(s["prs"], force=True)
+        s["pr_details"] = [pr_info(u, pr_cache()) for u in s["prs"]]
+    m = s["mark"]
+    print(bold(title_of(s)))
+    print(f"  id        {s['id']}")
+    print(f"  state     {c(s['label'], ANSI[s['group']])}   {'running' if s['alive'] else 'not running'}")
+    print(f"  folder    {short_path(s['cwd'])}" + (f"   branch {s['branch']}" if s["branch"] else ""))
+    print(f"  started   {datetime.fromtimestamp(s['first_ts']):%Y-%m-%d %H:%M}   "
+          f"last activity {ago(s['last_ts'])} ago   prompts {s['prompts']}")
+    if m.get("note"):
+        print(f"  note      {m['note']}")
+    if s["pr_details"]:
+        print(bold("\nPull requests"))
+        for p in s["pr_details"]:
+            if p.get("state"):
+                bits = [p["state"] + (" (draft)" if p.get("draft") else ""), f"checks {p.get('checks')}"]
+                if p.get("review"):
+                    bits.append(p["review"].replace("_", " "))
+                if p.get("mergeable") == "conflicting":
+                    bits.append("conflicts")
+                print(f"  {p['url']}  [{', '.join(bits)}]")
+                if p.get("title"):
+                    print(dim(f"    {p['title']}"))
+            else:
+                print(f"  {p['url']}" + (dim(f"  ({p['error']})") if p.get("error") else ""))
+    if s["links"]:
+        print(bold("\nLinks"))
+        for kind, urls in s["links"].items():
+            for u in urls:
+                print(f"  {kind:<9}{u}")
+    if s["files"]:
+        print(bold("\nFiles written/edited"))
+        for fp in s["files"][-15:]:
+            print(f"  {short_path(fp)}")
+        if len(s["files"]) > 15:
+            print(dim(f"  … and {len(s['files']) - 15} more"))
+    print(bold("\nYour last prompt"))
+    print("  " + one_line(s.get("last_prompt"), 400))
+    if s["last_role"] == "assistant":
+        print(bold("\nClaude's last message"))
+        for ln in s["last_text"].strip().splitlines()[-25:]:
+            print("  " + ln)
+    elif s.get("pending_tool"):
+        print(bold(f"\nLast action: {s['pending_tool']} (no result yet)"))
+    print(dim(f"\nresume:  cc-sessions resume {s['id'][:8]}"))
+
+
+def cmd_mark(action):
+    def run(args):
+        s = resolve(args.id)
+        text = " ".join(getattr(args, "text", None) or []) or None
+        apply_action(s["id"], action, text)
+        if action == "done" and text:
+            apply_action(s["id"], "note", text)
+        print(f"{action}: {s['id'][:8]}  {title_of(s)}")
+    return run
+
+
+def cmd_resume(args):
+    s = resolve(args.id)
+    claude = shutil.which("claude")
+    if not claude:
+        sys.exit("`claude` is not on PATH.")
+    if s["cwd"] and os.path.isdir(s["cwd"]):
+        os.chdir(s["cwd"])
+    if s["mark"].get("done") or s["mark"].get("parked"):
+        set_mark(s["id"], done=None, done_at=None, parked=None, parked_at=None)
+    print(dim(f"cd {short_path(os.getcwd())} && claude --resume {s['id']}"))
+    os.execv(claude, [claude, "--resume", s["id"]] + args.extra)
+
+
+def cmd_serve(args):
+    Dashboard(args.port).serve()
+
+
+def cmd_open(args):
+    port = load_json(DAEMON_FILE, {}).get("port") or args.port
+    if not daemon_running():
+        print("The dashboard isn't running. Start it with `cc-sessions install` (background) "
+              "or `cc-sessions serve` (foreground).")
+    url = f"http://localhost:{port}"
+    print(url)
+    open_path(url)
+
+
+# ------------------------------------------------------------------------ hook
+
+def cmd_hook(_args):
+    try:
+        data = json.load(sys.stdin)
+    except ValueError:
+        return
+    if not isinstance(data, dict) or not data.get("session_id"):
+        return
+    sid = str(data["session_id"])
+    if not re.fullmatch(r"[\w-]+", sid):
+        return
+    event = data.get("hook_event_name", "")
+    path = STATE_DIR / f"{sid}.json"
+    state = load_json(path, {})
+    prev = state.get("status")
+    state.update(session_id=sid, event=event, ts=time.time(),
+                 cwd=data.get("cwd") or state.get("cwd"))
+    if not pid_alive(state.get("pid"), state.get("pid_start")):
+        pid = find_claude_ancestor()
+        if pid:
+            state["pid"], state["pid_start"] = pid, proc_start_time(pid)
+
+    if event == "SessionStart":
+        state["status"] = "idle"
+    elif event == "Stop":
+        state["status"] = "stopped"
+    elif event in ("UserPromptSubmit", "PostToolUse"):
+        state["status"] = "working"
+        state.pop("message", None)
+    elif event == "SessionEnd":
+        state["status"] = "ended"
+        state["end_reason"] = data.get("reason")
+    elif event == "Notification":
+        ntype = str(data.get("notification_type") or "")
+        msg = str(data.get("message") or "")
+        state["message"] = msg
+        low = f"{ntype} {msg}".lower()
+        if "permission" in low:
+            state["status"] = "permission"
+        elif "elicitation" in low or "question" in low:
+            state["status"] = "question"
+        elif "idle" in low or "waiting for your input" in low:
+            state["status"] = "idle"
+        if (state.get("status") != prev and state.get("status") in ("permission", "question")
+                and not daemon_running()):
+            notify(f"Claude needs you · {short_path(state.get('cwd'))}", msg or ntype, urgent=True)
+    save_json(path, state)
+
+
+# ------------------------------------------------------------------- install
+
+def hook_command():
+    return f"{shlex.quote(str(SCRIPT))} hook"
+
+
+def is_our_hook(h):
+    cmd = h.get("command", "") if isinstance(h, dict) else ""
+    return "cc-sessions" in cmd and cmd.endswith(" hook")
+
+
+def hooks_installed():
+    hooks = load_json(SETTINGS_FILE, {}).get("hooks", {})
+    if not isinstance(hooks, dict):
+        return False
+    return any(is_our_hook(h) for gs in hooks.values() if isinstance(gs, list)
+               for g in gs if isinstance(g, dict) for h in g.get("hooks", []))
+
+
+def load_settings_strict():
+    if not SETTINGS_FILE.exists():
+        return {}
+    try:
+        with open(SETTINGS_FILE, encoding="utf-8") as f:
+            val = json.load(f)
+    except (OSError, ValueError) as e:
+        sys.exit(f"Cannot read {SETTINGS_FILE} ({e}); not changing it. Fix the file and retry.")
+    if not isinstance(val, dict):
+        sys.exit(f"{SETTINGS_FILE} is not a JSON object; not changing it.")
+    return val
+
+
+def strip_our_hooks(settings):
+    hooks = settings.get("hooks", {})
+    if not isinstance(hooks, dict):
+        return
+    for ev in list(hooks):
+        if not isinstance(hooks[ev], list):
+            continue
+        for g in hooks[ev]:
+            if isinstance(g, dict):
+                g["hooks"] = [h for h in g.get("hooks", []) if not is_our_hook(h)]
+        hooks[ev] = [g for g in hooks[ev] if not isinstance(g, dict) or g.get("hooks")]
+        if not hooks[ev]:
+            del hooks[ev]
+    if not hooks:
+        settings.pop("hooks", None)
+
+
+def systemctl(*a):
+    try:
+        return subprocess.run(["systemctl", "--user", *a], capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError) as e:
+        return subprocess.CompletedProcess(a, 1, "", str(e))
+
+
+def install_service(port):
+    state = systemctl("is-system-running").stdout.strip()
+    if not shutil.which("systemctl") or state in ("", "offline", "unknown"):
+        print("  No systemd user session here; run `cc-sessions serve` yourself instead.")
+        return
+    path = os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin")
+    local_bin = str(HOME / ".local" / "bin")
+    if local_bin not in path.split(":"):
+        path = f"{local_bin}:{path}"
+    UNIT_FILE.parent.mkdir(parents=True, exist_ok=True)
+    UNIT_FILE.write_text(f"""[Unit]
+Description=cc-sessions: dashboard for Claude Code sessions (http://localhost:{port})
+
+[Service]
+ExecStart={sys.executable} {SCRIPT} serve --port {port}
+Restart=on-failure
+RestartSec=5
+Environment="PATH={path}"
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=default.target
+""")
+    systemctl("daemon-reload")
+    r = systemctl("enable", "cc-sessions.service")
+    systemctl("restart", "cc-sessions.service")
+    if r.returncode == 0:
+        print(f"Background service running: http://localhost:{port}  (starts at login, restarts on failure)")
+    else:
+        print(f"  Could not enable the service: {r.stderr.strip()}")
+
+    DESKTOP_FILE.parent.mkdir(parents=True, exist_ok=True)
+    DESKTOP_FILE.write_text(f"""[Desktop Entry]
+Type=Application
+Name=Claude Sessions
+Comment=Dashboard of your Claude Code sessions
+Exec=xdg-open http://localhost:{port}
+Icon=utilities-terminal
+Terminal=false
+Categories=Development;
+""")
+    print("Added 'Claude Sessions' to your app launcher.")
+
+
+def cmd_install(args):
+    bindir = HOME / ".local" / "bin"
+    bindir.mkdir(parents=True, exist_ok=True)
+    link = bindir / "cc-sessions"
+    if link.is_symlink() or link.exists():
+        link.unlink()
+    link.symlink_to(SCRIPT)
+    print(f"Linked {short_path(link)} -> {short_path(SCRIPT)}")
+    if str(bindir) not in os.environ.get("PATH", "").split(":"):
+        print(f"  note: add {short_path(bindir)} to PATH (Ubuntu does this at next login).")
+
+    if not args.no_hooks:
+        settings = load_settings_strict()
+        if SETTINGS_FILE.exists():
+            backup = SETTINGS_FILE.with_suffix(".json.bak-cc-sessions")
+            shutil.copy2(SETTINGS_FILE, backup)
+            print(f"Backed up settings to {short_path(backup)}")
+        strip_our_hooks(settings)
+        hooks = settings.setdefault("hooks", {})
+        for ev in HOOK_EVENTS:
+            entry = {"hooks": [{"type": "command", "command": hook_command(), "timeout": 5}]}
+            if ev in ("PostToolUse", "Notification"):
+                entry["matcher"] = ""
+            hooks.setdefault(ev, []).append(entry)
+        save_json(SETTINGS_FILE, settings)
+        print(f"Added hooks to {short_path(SETTINGS_FILE)} (sessions started or resumed from now on).")
+
+    if not args.no_service:
+        install_service(args.port)
+    if not shutil.which("gh"):
+        print("  Tip: install the GitHub CLI (`sudo apt install gh`, then `gh auth login`) for PR states.")
+
+
+def cmd_uninstall(_args):
+    if SETTINGS_FILE.exists():
+        settings = load_settings_strict()
+        strip_our_hooks(settings)
+        save_json(SETTINGS_FILE, settings)
+        print(f"Removed hooks from {short_path(SETTINGS_FILE)}.")
+    if UNIT_FILE.exists():
+        systemctl("disable", "--now", "cc-sessions.service")
+        UNIT_FILE.unlink()
+        systemctl("daemon-reload")
+        print("Stopped and removed the background service.")
+    if DESKTOP_FILE.exists():
+        DESKTOP_FILE.unlink()
+    link = HOME / ".local" / "bin" / "cc-sessions"
+    if link.is_symlink():
+        link.unlink()
+    print(f"Your marks and notes stay in {short_path(DATA_DIR)}.")
+
+
+# ----------------------------------------------------------------------- main
+
+def main():
+    p = argparse.ArgumentParser(prog="cc-sessions", description=__doc__.split("\n\n")[0])
+    p.add_argument("-a", "--all", action="store_true", help="include done and old sessions")
+    p.add_argument("-d", "--days", type=int, default=DEFAULT_DAYS,
+                   help=f"hide closed sessions idle longer than this (default {DEFAULT_DAYS})")
+    p.add_argument("--version", action="version", version=VERSION)
+    sub = p.add_subparsers(dest="cmd")
+    sub.add_parser("list", help="list sessions (default)")
+    s = sub.add_parser("show", help="details for one session")
+    s.add_argument("id")
+    s.add_argument("--no-gh", action="store_true", help="don't refresh PR state with gh")
+    for name, hlp in (("done", "mark solved"), ("undone", "unmark done"),
+                      ("park", "set aside for later"), ("unpark", "un-park")):
+        s = sub.add_parser(name, help=hlp)
+        s.add_argument("id")
+        if name == "done":
+            s.add_argument("text", nargs="*", metavar="note")
+    s = sub.add_parser("note", help="attach a note (empty clears it)")
+    s.add_argument("id")
+    s.add_argument("text", nargs="*")
+    s = sub.add_parser("resume", help="resume a session in its folder")
+    s.add_argument("id")
+    s.add_argument("extra", nargs=argparse.REMAINDER)
+    for name, hlp in (("serve", "run the dashboard server"), ("open", "open the dashboard")):
+        s = sub.add_parser(name, help=hlp)
+        s.add_argument("--port", type=int, default=DEFAULT_PORT)
+    s = sub.add_parser("install", help="hooks, background service, app launcher")
+    s.add_argument("--port", type=int, default=DEFAULT_PORT)
+    s.add_argument("--no-hooks", action="store_true")
+    s.add_argument("--no-service", action="store_true")
+    sub.add_parser("uninstall", help="remove hooks, service and launcher")
+    sub.add_parser("hook", help=argparse.SUPPRESS)
+    args = p.parse_args()
+
+    handlers = {
+        None: cmd_list, "list": cmd_list, "show": cmd_show, "resume": cmd_resume,
+        "done": cmd_mark("done"), "undone": cmd_mark("undone"), "park": cmd_mark("park"),
+        "unpark": cmd_mark("unpark"), "note": cmd_mark("note"), "serve": cmd_serve,
+        "open": cmd_open, "install": cmd_install, "uninstall": cmd_uninstall, "hook": cmd_hook,
+    }
+    handlers[args.cmd](args)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except BrokenPipeError:
+        pass
