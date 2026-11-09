@@ -1,0 +1,10 @@
+{
+  "name": "ccdeck",
+  "version": "0.3.0",
+  "description": "Live dashboard for your local Claude Code sessions: what needs you, which PRs wait for review, token and context usage, and what's done.",
+  "author": { "name": "slonik923", "url": "https://github.com/slonik923" },
+  "homepage": "https://github.com/slonik923/ccdeck",
+  "repository": "https://github.com/slonik923/ccdeck",
+  "license": "MIT",
+  "keywords": ["sessions", "dashboard", "hooks", "notifications", "pull-requests", "linux"]
+}

@@ -1,0 +1,12 @@
+{
+  "name": "ccdeck",
+  "owner": { "name": "slonik923", "url": "https://github.com/slonik923" },
+  "description": "ccdeck: a live dashboard for your local Claude Code sessions",
+  "plugins": [
+    {
+      "name": "ccdeck",
+      "source": "./",
+      "description": "Live dashboard for your local Claude Code sessions: what needs you, which PRs wait for review, token and context usage, and what's done."
+    }
+  ]
+}
