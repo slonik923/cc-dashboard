@@ -1,5 +1,7 @@
 # ccdeck
 
+[![CI](https://github.com/slonik923/ccdeck/actions/workflows/ci.yml/badge.svg)](https://github.com/slonik923/ccdeck/actions/workflows/ci.yml)
+
 Keep track of your **local Claude Code sessions** on Ubuntu/Linux. It answers four questions:
 
 - Which sessions are open?
@@ -11,7 +13,7 @@ You get a live dashboard in the browser at `http://localhost:7799`, served by a 
 
 ![Dashboard](docs/dashboard.png)
 
-`ccdeck` is one Python 3 file plus one HTML page, using only the standard library. It reads the transcripts Claude Code already writes to `~/.claude/projects/` and never modifies them. PR states come from the GitHub CLI (`gh`) when it's installed.
+`ccdeck` is one Python 3.9+ file plus one HTML page, using only the standard library. It reads the transcripts Claude Code already writes to `~/.claude/projects/` and never modifies them. PR states come from the GitHub CLI (`gh`) when it's installed.
 
 ## Install
 
