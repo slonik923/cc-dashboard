@@ -1,22 +1,22 @@
 #!/usr/bin/env python3
-"""cc-sessions: keep track of your local Claude Code sessions.
+"""ccdeck: a live dashboard for your local Claude Code sessions.
 
 A terminal list and a live dashboard (http://localhost:7799) for every Claude
 Code session on this machine: which are open, which need you, which have a PR
 waiting for review, and which are done. Python 3.8+ standard library only;
 `gh` (GitHub CLI) is used for PR states when installed.
 
-    cc-sessions                 sessions grouped by what they need
-    cc-sessions -a              include done and old sessions
-    cc-sessions show ID         details: PRs, links, files, last message
-    cc-sessions done ID [NOTE]  mark solved          (undone ID to reopen)
-    cc-sessions park ID         set aside for later   (unpark ID)
-    cc-sessions note ID TEXT    attach your own note
-    cc-sessions resume ID       cd to the session's folder and `claude --resume`
-    cc-sessions serve           run the dashboard in the foreground
-    cc-sessions open            open the dashboard in the browser
-    cc-sessions install         hooks + background service + app launcher
-    cc-sessions uninstall       remove all of that again
+    ccdeck                 sessions grouped by what they need
+    ccdeck -a              include done and old sessions
+    ccdeck show ID         details: PRs, links, files, last message
+    ccdeck done ID [NOTE]  mark solved          (undone ID to reopen)
+    ccdeck park ID         set aside for later   (unpark ID)
+    ccdeck note ID TEXT    attach your own note
+    ccdeck resume ID       cd to the session's folder and `claude --resume`
+    ccdeck serve           run the dashboard in the foreground
+    ccdeck open            open the dashboard in the browser
+    ccdeck install         hooks + background service + app launcher
+    ccdeck uninstall       remove all of that again
 
 ID is a row number from the last list or any unique prefix of a session id.
 """
@@ -43,7 +43,7 @@ HOME = Path.home()
 CLAUDE_DIR = Path(os.environ.get("CLAUDE_CONFIG_DIR", HOME / ".claude"))
 PROJECTS_DIR = CLAUDE_DIR / "projects"
 SETTINGS_FILE = CLAUDE_DIR / "settings.json"
-DATA_DIR = CLAUDE_DIR / "cc-sessions"
+DATA_DIR = CLAUDE_DIR / "ccdeck"
 STATE_DIR = DATA_DIR / "state"
 MARKS_FILE = DATA_DIR / "marks.json"
 CACHE_FILE = DATA_DIR / "index-cache.json"
@@ -53,9 +53,9 @@ TOKEN_FILE = DATA_DIR / "token"
 DAEMON_FILE = DATA_DIR / "daemon.json"
 SCRIPT = Path(__file__).resolve()
 WEB_DIR = SCRIPT.parent / "web"
-UNIT_FILE = HOME / ".config" / "systemd" / "user" / "cc-sessions.service"
-DESKTOP_FILE = HOME / ".local" / "share" / "applications" / "cc-sessions.desktop"
-DEFAULT_PORT = int(os.environ.get("CC_SESSIONS_PORT", "7799"))
+UNIT_FILE = HOME / ".config" / "systemd" / "user" / "ccdeck.service"
+DESKTOP_FILE = HOME / ".local" / "share" / "applications" / "ccdeck.desktop"
+DEFAULT_PORT = int(os.environ.get("CCDECK_PORT", "7799"))
 CACHE_VERSION = 4
 DEFAULT_DAYS = 14
 QUIET_AFTER = 15 * 60  # "working" with no activity for this long => probably interrupted
@@ -717,7 +717,7 @@ def desktop_env():
 
 
 def notify(title, body, urgent=False):
-    if os.environ.get("CC_SESSIONS_NOTIFY", "1") == "0" or not shutil.which("notify-send"):
+    if os.environ.get("CCDECK_NOTIFY", "1") == "0" or not shutil.which("notify-send"):
         return
     cmd = ["notify-send", "-a", "Claude Code", "-i", "utilities-terminal"]
     if urgent:
@@ -746,7 +746,7 @@ TERMINALS = [  # (binary, args before the command)
 def terminal_command(cwd, argv):
     script = f"cd {shlex.quote(cwd)} && {shlex.join(argv)}; exec \"${{SHELL:-bash}}\""
     inner = ["bash", "-lc", script]
-    custom = os.environ.get("CC_SESSIONS_TERMINAL")
+    custom = os.environ.get("CCDECK_TERMINAL")
     candidates = [(shlex.split(custom)[0], shlex.split(custom)[1:])] if custom else TERMINALS
     for binary, pre in candidates:
         if shutil.which(binary):
@@ -758,7 +758,7 @@ def open_terminal(cwd, argv):
     """Open a new terminal window running argv in cwd; leaves a shell open afterwards."""
     cmd = terminal_command(cwd, argv)
     if not cmd:
-        raise RuntimeError("No terminal emulator found; set CC_SESSIONS_TERMINAL")
+        raise RuntimeError("No terminal emulator found; set CCDECK_TERMINAL")
     subprocess.Popen(cmd, cwd=cwd if os.path.isdir(cwd) else None, env=desktop_env(),
                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
     return cmd[0]
@@ -909,7 +909,7 @@ class Dashboard:
         dash = self
 
         class Handler(BaseHTTPRequestHandler):
-            server_version = "cc-sessions/" + VERSION
+            server_version = "ccdeck/" + VERSION
 
             def log_message(self, *a):
                 pass
@@ -985,7 +985,7 @@ class Dashboard:
         threading.Thread(target=self.pr_loop, daemon=True).start()
         httpd = ThreadingHTTPServer(("127.0.0.1", self.port), self.make_handler())
         httpd.daemon_threads = True
-        print(f"cc-sessions dashboard on http://localhost:{self.port}", flush=True)
+        print(f"ccdeck dashboard on http://localhost:{self.port}", flush=True)
         try:
             httpd.serve_forever()
         except KeyboardInterrupt:
@@ -1049,7 +1049,7 @@ def cmd_list(args):
     except OSError:
         pass
     if rows and not hooks_installed():
-        print(dim("\nTip: `cc-sessions install` adds hooks (exact live states) and the dashboard."))
+        print(dim("\nTip: `ccdeck install` adds hooks (exact live states) and the dashboard."))
     elif daemon_running():
         print(dim(f"\nDashboard: http://localhost:{load_json(DAEMON_FILE, {}).get('port', DEFAULT_PORT)}"))
 
@@ -1116,7 +1116,7 @@ def cmd_show(args):
             print("  " + ln)
     elif s.get("pending_tool"):
         print(bold(f"\nLast action: {s['pending_tool']} (no result yet)"))
-    print(dim(f"\nresume:  cc-sessions resume {s['id'][:8]}"))
+    print(dim(f"\nresume:  ccdeck resume {s['id'][:8]}"))
 
 
 def cmd_mark(action):
@@ -1150,8 +1150,8 @@ def cmd_serve(args):
 def cmd_open(args):
     port = load_json(DAEMON_FILE, {}).get("port") or args.port
     if not daemon_running():
-        print("The dashboard isn't running. Start it with `cc-sessions install` (background) "
-              "or `cc-sessions serve` (foreground).")
+        print("The dashboard isn't running. Start it with `ccdeck install` (background) "
+              "or `ccdeck serve` (foreground).")
     url = f"http://localhost:{port}"
     print(url)
     open_path(url)
@@ -1215,7 +1215,7 @@ def hook_command():
 
 def is_our_hook(h):
     cmd = h.get("command", "") if isinstance(h, dict) else ""
-    return "cc-sessions" in cmd and cmd.endswith(" hook")
+    return ("ccdeck" in cmd or "cc-sessions" in cmd) and cmd.endswith(" hook")  # cc-sessions: old name
 
 
 def hooks_installed():
@@ -1266,7 +1266,7 @@ def systemctl(*a):
 def install_service(port):
     state = systemctl("is-system-running").stdout.strip()
     if not shutil.which("systemctl") or state in ("", "offline", "unknown"):
-        print("  No systemd user session here; run `cc-sessions serve` yourself instead.")
+        print("  No systemd user session here; run `ccdeck serve` yourself instead.")
         return
     path = os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin")
     local_bin = str(HOME / ".local" / "bin")
@@ -1274,7 +1274,7 @@ def install_service(port):
         path = f"{local_bin}:{path}"
     UNIT_FILE.parent.mkdir(parents=True, exist_ok=True)
     UNIT_FILE.write_text(f"""[Unit]
-Description=cc-sessions: dashboard for Claude Code sessions (http://localhost:{port})
+Description=ccdeck: dashboard for Claude Code sessions (http://localhost:{port})
 
 [Service]
 ExecStart={sys.executable} {SCRIPT} serve --port {port}
@@ -1287,8 +1287,8 @@ Environment=PYTHONUNBUFFERED=1
 WantedBy=default.target
 """)
     systemctl("daemon-reload")
-    r = systemctl("enable", "cc-sessions.service")
-    systemctl("restart", "cc-sessions.service")
+    r = systemctl("enable", "ccdeck.service")
+    systemctl("restart", "ccdeck.service")
     if r.returncode == 0:
         print(f"Background service running: http://localhost:{port}  (starts at login, restarts on failure)")
     else:
@@ -1297,20 +1297,20 @@ WantedBy=default.target
     DESKTOP_FILE.parent.mkdir(parents=True, exist_ok=True)
     DESKTOP_FILE.write_text(f"""[Desktop Entry]
 Type=Application
-Name=Claude Sessions
+Name=ccdeck
 Comment=Dashboard of your Claude Code sessions
 Exec=xdg-open http://localhost:{port}
 Icon=utilities-terminal
 Terminal=false
 Categories=Development;
 """)
-    print("Added 'Claude Sessions' to your app launcher.")
+    print("Added 'ccdeck' to your app launcher.")
 
 
 def cmd_install(args):
     bindir = HOME / ".local" / "bin"
     bindir.mkdir(parents=True, exist_ok=True)
-    link = bindir / "cc-sessions"
+    link = bindir / "ccdeck"
     if link.is_symlink() or link.exists():
         link.unlink()
     link.symlink_to(SCRIPT)
@@ -1321,7 +1321,7 @@ def cmd_install(args):
     if not args.no_hooks:
         settings = load_settings_strict()
         if SETTINGS_FILE.exists():
-            backup = SETTINGS_FILE.with_suffix(".json.bak-cc-sessions")
+            backup = SETTINGS_FILE.with_suffix(".json.bak-ccdeck")
             shutil.copy2(SETTINGS_FILE, backup)
             print(f"Backed up settings to {short_path(backup)}")
         strip_our_hooks(settings)
@@ -1347,13 +1347,13 @@ def cmd_uninstall(_args):
         save_json(SETTINGS_FILE, settings)
         print(f"Removed hooks from {short_path(SETTINGS_FILE)}.")
     if UNIT_FILE.exists():
-        systemctl("disable", "--now", "cc-sessions.service")
+        systemctl("disable", "--now", "ccdeck.service")
         UNIT_FILE.unlink()
         systemctl("daemon-reload")
         print("Stopped and removed the background service.")
     if DESKTOP_FILE.exists():
         DESKTOP_FILE.unlink()
-    link = HOME / ".local" / "bin" / "cc-sessions"
+    link = HOME / ".local" / "bin" / "ccdeck"
     if link.is_symlink():
         link.unlink()
     print(f"Your marks and notes stay in {short_path(DATA_DIR)}.")
@@ -1362,7 +1362,7 @@ def cmd_uninstall(_args):
 # ----------------------------------------------------------------------- main
 
 def main():
-    p = argparse.ArgumentParser(prog="cc-sessions", description=__doc__.split("\n\n")[0])
+    p = argparse.ArgumentParser(prog="ccdeck", description=__doc__.split("\n\n")[0])
     p.add_argument("-a", "--all", action="store_true", help="include done and old sessions")
     p.add_argument("-d", "--days", type=int, default=DEFAULT_DAYS,
                    help=f"hide closed sessions idle longer than this (default {DEFAULT_DAYS})")

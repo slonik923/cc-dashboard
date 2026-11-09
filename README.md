@@ -1,4 +1,4 @@
-# cc-sessions
+# ccdeck
 
 Keep track of your **local Claude Code sessions** on Ubuntu/Linux. It answers four questions:
 
@@ -11,25 +11,25 @@ You get a live dashboard in the browser at `http://localhost:7799`, served by a 
 
 ![Dashboard](docs/dashboard.png)
 
-`cc-sessions` is one Python 3 file plus one HTML page, using only the standard library. It reads the transcripts Claude Code already writes to `~/.claude/projects/` and never modifies them. PR states come from the GitHub CLI (`gh`) when it's installed.
+`ccdeck` is one Python 3 file plus one HTML page, using only the standard library. It reads the transcripts Claude Code already writes to `~/.claude/projects/` and never modifies them. PR states come from the GitHub CLI (`gh`) when it's installed.
 
 ## Install
 
 ```bash
-git clone https://github.com/slonik923/cc-dashboard.git ~/cc-dashboard
-~/cc-dashboard/cc-sessions install
+git clone https://github.com/slonik923/ccdeck.git ~/ccdeck
+~/ccdeck/ccdeck install
 ```
 
 `install` does four things:
 
-1. **Command.** It links `~/.local/bin/cc-sessions` to the script in the clone, so `git pull` updates it.
-2. **Hooks.** It adds hooks to `~/.claude/settings.json` and saves a backup as `settings.json.bak-cc-sessions` first. Each session then reports its exact live state: working, waiting for permission, finished, closed. The hooks apply to sessions started or resumed after you install.
-3. **Background service.** It adds a systemd user service, `cc-sessions.service`. The service starts at login, restarts if it crashes, keeps PR states up to date and sends the notifications.
-4. **App launcher.** It adds a **Claude Sessions** entry that opens the dashboard.
+1. **Command.** It links `~/.local/bin/ccdeck` to the script in the clone, so `git pull` updates it.
+2. **Hooks.** It adds hooks to `~/.claude/settings.json` and saves a backup as `settings.json.bak-ccdeck` first. Each session then reports its exact live state: working, waiting for permission, finished, closed. The hooks apply to sessions started or resumed after you install.
+3. **Background service.** It adds a systemd user service, `ccdeck.service`. The service starts at login, restarts if it crashes, keeps PR states up to date and sends the notifications.
+4. **App launcher.** It adds a **ccdeck** entry that opens the dashboard.
 
 For PR states, also run `sudo apt install gh` and then `gh auth login`.
 
-Options: `--port 8123`, `--no-hooks`, `--no-service`. To remove everything: `cc-sessions uninstall`. Your marks and notes stay in `~/.claude/cc-sessions/`.
+Options: `--port 8123`, `--no-hooks`, `--no-service`. To remove everything: `ccdeck uninstall`. Your marks and notes stay in `~/.claude/ccdeck/`.
 
 ## The dashboard
 
@@ -71,20 +71,20 @@ Each card has these buttons:
 
 Keyboard: `/` jumps to the filter box and `Esc` clears it.
 
-The terminal used for **Resume ▸** is the first one found from GNOME Terminal, Ptyxis, Console, Konsole, xfce4-terminal, Tilix, kitty, Alacritty and xterm. To choose a different one, set `CC_SESSIONS_TERMINAL`, for example `CC_SESSIONS_TERMINAL="wezterm start --"`.
+The terminal used for **Resume ▸** is the first one found from GNOME Terminal, Ptyxis, Console, Konsole, xfce4-terminal, Tilix, kitty, Alacritty and xterm. To choose a different one, set `CCDECK_TERMINAL`, for example `CCDECK_TERMINAL="wezterm start --"`.
 
 ## Terminal
 
 ```text
-cc-sessions                 sessions grouped by state (done ones and closed ones older than 14 days are hidden)
-cc-sessions -a              everything
-cc-sessions show 3          details: PRs with state, links, files, last messages
-cc-sessions resume 3        cd into the folder and claude --resume
-cc-sessions done 3 [note]   mark solved             cc-sessions undone 3
-cc-sessions park 3          set aside               cc-sessions unpark 3
-cc-sessions note 3 text     attach a note
-cc-sessions open            open the dashboard
-cc-sessions serve           run the dashboard in the foreground (instead of the service)
+ccdeck                 sessions grouped by state (done ones and closed ones older than 14 days are hidden)
+ccdeck -a              everything
+ccdeck show 3          details: PRs with state, links, files, last messages
+ccdeck resume 3        cd into the folder and claude --resume
+ccdeck done 3 [note]   mark solved             ccdeck undone 3
+ccdeck park 3          set aside               ccdeck unpark 3
+ccdeck note 3 text     attach a note
+ccdeck open            open the dashboard
+ccdeck serve           run the dashboard in the foreground (instead of the service)
 ```
 
 `3` is the row number from the last list. A prefix of the session id also works.
@@ -92,10 +92,10 @@ cc-sessions serve           run the dashboard in the foreground (instead of the 
 ## How it works
 
 - **Transcripts.** `~/.claude/projects/*/*.jsonl` provides each session's title, folder, branch and messages, plus the PR, artifact and document links Claude posted or created, and the files it wrote. Parsing is cached by file size and modification time.
-- **Hooks.** The hooks (`SessionStart`, `UserPromptSubmit`, `PostToolUse`, `Notification`, `Stop`, `SessionEnd`) write a small state file for each session to `~/.claude/cc-sessions/state/`. That's how the tool knows exactly whether a session is working, waiting for permission or finished. The file also records the Claude process, so a crashed session isn't shown as running. Without hooks, these states are guessed from running `claude` processes and the end of each transcript.
+- **Hooks.** The hooks (`SessionStart`, `UserPromptSubmit`, `PostToolUse`, `Notification`, `Stop`, `SessionEnd`) write a small state file for each session to `~/.claude/ccdeck/state/`. That's how the tool knows exactly whether a session is working, waiting for permission or finished. The file also records the Claude process, so a crashed session isn't shown as running. Without hooks, these states are guessed from running `claude` processes and the end of each transcript.
 - **PR states.** `gh pr view` is called for PRs in sessions that aren't done. Open PRs are re-checked every 3 minutes, and every minute while CI is running.
-- **The server** listens only on `127.0.0.1`. The API needs a random token, stored in `~/.claude/cc-sessions/token`, which only the dashboard page receives. Requests whose `Host` header isn't localhost are rejected. Together, these stop other websites from reading your sessions or opening terminals.
-- **Notifications** use `notify-send` when a session moves into *Needs you*, *PRs to look at* or *Finished*. To turn them off, set `CC_SESSIONS_NOTIFY=0`, for example with `systemctl --user edit cc-sessions`.
+- **The server** listens only on `127.0.0.1`. The API needs a random token, stored in `~/.claude/ccdeck/token`, which only the dashboard page receives. Requests whose `Host` header isn't localhost are rejected. Together, these stop other websites from reading your sessions or opening terminals.
+- **Notifications** use `notify-send` when a session moves into *Needs you*, *PRs to look at* or *Finished*. To turn them off, set `CCDECK_NOTIFY=0`, for example with `systemctl --user edit ccdeck`.
 
 ## Limits
 
@@ -110,3 +110,7 @@ python3 -m unittest discover -s tests -v
 ```
 
 The tests run against a throwaway `HOME` with synthetic transcripts and a fake `gh`.
+
+## License and affiliation
+
+MIT, see `LICENSE`. ccdeck is an independent project and is not affiliated with or endorsed by Anthropic. "Claude" and "Claude Code" are trademarks of Anthropic.

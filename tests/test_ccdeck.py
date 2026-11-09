@@ -1,4 +1,4 @@
-"""Tests for cc-sessions. Run: python3 -m unittest discover -s tests -v
+"""Tests for ccdeck. Run: python3 -m unittest discover -s tests -v
 
 Each test class gets a throwaway HOME with synthetic Claude Code transcripts and a
 fake `gh` on PATH, so nothing touches your real ~/.claude.
@@ -20,10 +20,10 @@ from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-TMP = Path(tempfile.mkdtemp(prefix="cc-sessions-test-"))
+TMP = Path(tempfile.mkdtemp(prefix="ccdeck-test-"))
 os.environ["HOME"] = str(TMP)
 os.environ.pop("CLAUDE_CONFIG_DIR", None)
-os.environ["CC_SESSIONS_NOTIFY"] = "0"
+os.environ["CCDECK_NOTIFY"] = "0"
 
 FAKE_GH = TMP / "bin" / "gh"
 FAKE_GH.parent.mkdir(parents=True)
@@ -49,8 +49,8 @@ print(json.dumps(d))
 FAKE_GH.chmod(FAKE_GH.stat().st_mode | stat.S_IEXEC)
 os.environ["PATH"] = f"{FAKE_GH.parent}:{os.environ['PATH']}"
 
-loader = importlib.machinery.SourceFileLoader("cc_sessions", str(ROOT / "cc-sessions"))
-spec = importlib.util.spec_from_loader("cc_sessions", loader)
+loader = importlib.machinery.SourceFileLoader("ccdeck", str(ROOT / "ccdeck"))
+spec = importlib.util.spec_from_loader("ccdeck", loader)
 cc = importlib.util.module_from_spec(spec)
 loader.exec_module(cc)
 
@@ -302,11 +302,11 @@ class ServerTest(unittest.TestCase):
 
 class TerminalTest(unittest.TestCase):
     def test_command_is_quoted(self):
-        os.environ["CC_SESSIONS_TERMINAL"] = "gh --"  # any binary on PATH works for building the command
+        os.environ["CCDECK_TERMINAL"] = "gh --"  # any binary on PATH works for building the command
         try:
             cmd = cc.terminal_command("/tmp/it's here", ["claude", "--resume", "abc"])
         finally:
-            del os.environ["CC_SESSIONS_TERMINAL"]
+            del os.environ["CCDECK_TERMINAL"]
         self.assertEqual(cmd[:4], ["gh", "--", "bash", "-lc"])
         self.assertIn("cd '/tmp/it'\"'\"'s here' && claude --resume abc", cmd[4])
 

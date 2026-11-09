@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Claude sessions</title>
+<title>ccdeck</title>
 <link rel="icon" id="favicon" href="data:,">
 <style>
 :root {
@@ -56,6 +56,7 @@ header {
   backdrop-filter: blur(8px); border-bottom: 1px solid var(--line);
 }
 .bar { max-width: 1500px; margin: 0 auto; padding: 12px 20px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.sub { font-weight: 400; color: var(--muted); font-size: 13px; }
 h1 { font-size: 16px; margin: 0; font-weight: 650; letter-spacing: -.01em; display: flex; align-items: center; gap: 8px; }
 .pulse { width: 8px; height: 8px; border-radius: 50%; background: var(--g-yours); }
 .pulse.off { background: var(--st-permission); }
@@ -151,7 +152,7 @@ section > h2 .dot { width: 9px; height: 9px; border-radius: 50%; background: var
 <body>
 <header>
   <div class="bar">
-    <h1><span class="pulse" id="pulse"></span>Claude sessions</h1>
+    <h1><span class="pulse" id="pulse"></span>ccdeck <span class="sub">Claude Code sessions</span></h1>
     <span class="updated" id="updated"></span>
     <span class="spacer"></span>
     <input class="search" id="q" type="search" placeholder="Filter by title, project, branch, note…" autocomplete="off">
@@ -262,7 +263,7 @@ async function act(id, action, extra) {
 function renderStatus(err) {
   const stale = !lastOk || Date.now() - lastOk > 8000;
   $("pulse").classList.toggle("off", !!err || stale);
-  $("updated").textContent = err ? "Can't reach the cc-sessions server" : data ? "updated " + ago(data.generated) : "";
+  $("updated").textContent = err ? "Can't reach the ccdeck server" : data ? "updated " + ago(data.generated) : "";
 }
 
 function setFavicon(n, color) {
@@ -370,7 +371,7 @@ function render() {
   for (const s of rows) (byGroup[s.group] = byGroup[s.group] || []).push(s);
 
   const urgent = (data.counts.needs || 0) + (data.counts.review || 0);
-  document.title = (urgent ? `(${urgent}) ` : "") + "Claude sessions";
+  document.title = (urgent ? `(${urgent}) ` : "") + "ccdeck";
   const favColor = data.counts.needs ? "#d93036" : data.counts.review ? "#7c4dcc" : data.counts.working ? "#c98a00" : "#23864a";
   setFavicon(urgent, favColor);
 
@@ -386,7 +387,7 @@ function render() {
   }));
 
   const banners = [];
-  if (!data.hooks) banners.push(h("div", { class: "banner" }, "Live states are guessed. Run ", h("code", {}, "cc-sessions install"), " to add the hooks that report exact states."));
+  if (!data.hooks) banners.push(h("div", { class: "banner" }, "Live states are guessed. Run ", h("code", {}, "ccdeck install"), " to add the hooks that report exact states."));
   if (!data.gh) banners.push(h("div", { class: "banner" }, "PR states need the GitHub CLI: ", h("code", {}, "sudo apt install gh"), " then ", h("code", {}, "gh auth login"), "."));
   $("banners").replaceChildren(...banners);
 
