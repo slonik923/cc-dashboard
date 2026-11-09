@@ -38,7 +38,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
 
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 HOME = Path.home()
 CLAUDE_DIR = Path(os.environ.get("CLAUDE_CONFIG_DIR", HOME / ".claude"))
 PROJECTS_DIR = CLAUDE_DIR / "projects"
@@ -56,7 +56,7 @@ WEB_DIR = SCRIPT.parent / "web"
 UNIT_FILE = HOME / ".config" / "systemd" / "user" / "ccdeck.service"
 DESKTOP_FILE = HOME / ".local" / "share" / "applications" / "ccdeck.desktop"
 DEFAULT_PORT = int(os.environ.get("CCDECK_PORT", "7799"))
-CACHE_VERSION = 4
+CACHE_VERSION = 5
 DEFAULT_DAYS = 14
 QUIET_AFTER = 15 * 60  # "working" with no activity for this long => probably interrupted
 HOOK_EVENTS = ["SessionStart", "UserPromptSubmit", "PostToolUse", "Notification", "Stop", "SessionEnd"]
@@ -163,6 +163,15 @@ def short_path(p):
     return "~" + s[len(h):] if s == h or s.startswith(h + "/") else s
 
 
+def fmt_tokens(n):
+    n = n or 0
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.1f}M".replace(".0M", "M")
+    if n >= 1000:
+        return f"{n / 1000:.0f}k"
+    return str(n)
+
+
 def one_line(s, n):
     s = " ".join((s or "").split())
     return s if len(s) <= n else s[: n - 1] + "…"
@@ -261,6 +270,70 @@ DECISION_RE = re.compile(
     re.I)
 
 
+USAGE_KEYS = (("input", "input_tokens"), ("cache_write", "cache_creation_input_tokens"),
+              ("cache_read", "cache_read_input_tokens"), ("output", "output_tokens"))
+OLD_200K = re.compile(r"claude-(3|haiku-4|opus-4-[015]|opus-4-20|sonnet-4-[05]|sonnet-4-20)")
+
+
+def empty_usage():
+    return {k: 0 for k, _ in USAGE_KEYS}
+
+
+def add_usage(total, usage):
+    for k, src in USAGE_KEYS:
+        v = usage.get(src)
+        if isinstance(v, int):
+            total[k] += v
+
+
+def context_of(usage):
+    return sum(usage.get(k) or 0 for k in
+               ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
+               if isinstance(usage.get(k) or 0, int))
+
+
+def context_limit(model, used):
+    env = os.environ.get("CCDECK_CONTEXT_LIMIT", "")
+    if env.isdigit():
+        return int(env)
+    if model and OLD_200K.match(model) and "[1m]" not in model and used <= 200_000:
+        return 200_000
+    return 1_000_000
+
+
+def assistant_usage(e, seen):
+    """(usage, model) for an assistant entry the first time its message id is seen."""
+    msg = e.get("message")
+    if not isinstance(msg, dict) or not isinstance(msg.get("usage"), dict):
+        return None, None
+    mid = msg.get("id") or e.get("requestId") or e.get("uuid")
+    if mid in seen:
+        return None, None
+    seen.add(mid)
+    model = msg.get("model")
+    return msg["usage"], (model if isinstance(model, str) and not model.startswith("<") else None)
+
+
+def parse_usage_only(path):
+    total, seen = empty_usage(), set()
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                if '"usage"' not in line:
+                    continue
+                try:
+                    e = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(e, dict) and e.get("type") == "assistant":
+                    u, _ = assistant_usage(e, seen)
+                    if u:
+                        add_usage(total, u)
+    except OSError:
+        pass
+    return total
+
+
 def block_text(content):
     if isinstance(content, str):
         return content
@@ -307,8 +380,10 @@ def parse_transcript(path):
         "summary": None, "first_prompt": None, "last_prompt": None, "prompts": 0,
         "first_ts": 0.0, "last_ts": 0.0, "last_role": None, "last_text": "",
         "api_error": False, "pending_tool": None, "prs": [], "links": {}, "files": [],
+        "usage": empty_usage(), "context": 0, "model": None,
     }
     prs, files, links, tool_names, pending = {}, {}, {}, {}, {}
+    seen_msgs = set()
 
     def add_links(text):
         for m in PR_RE.findall(text):
@@ -368,6 +443,13 @@ def parse_transcript(path):
                     info["api_error"] = False
                 continue
 
+            usage, model = assistant_usage(e, seen_msgs)
+            if usage:
+                add_usage(info["usage"], usage)
+                ctx = context_of(usage)
+                if ctx:
+                    info["context"] = ctx
+                info["model"] = model or info["model"]
             if not isinstance(content, list):
                 continue
             info["api_error"] = bool(e.get("isApiErrorMessage") or e.get("error"))
@@ -430,6 +512,28 @@ def scan_transcripts():
                 prev = sessions.get(info["id"])
                 if not prev or info["last_ts"] > prev["last_ts"]:
                     sessions[info["id"]] = dict(info)
+            sub_usage = {}
+            for path in PROJECTS_DIR.glob("*/*/subagents/*.jsonl"):
+                try:
+                    st = path.stat()
+                except OSError:
+                    continue
+                key = str(path)
+                seen.add(key)
+                sig = [st.st_mtime, st.st_size]
+                hit = entries.get(key)
+                if hit and hit.get("sig") == sig and "usage" in hit:
+                    u = hit["usage"]
+                else:
+                    u = parse_usage_only(path)
+                    entries[key] = {"sig": sig, "usage": u}
+                    dirty = True
+                agg = sub_usage.setdefault(path.parent.parent.name, empty_usage())
+                for k in agg:
+                    agg[k] += u.get(k, 0)
+            for sid, u in sub_usage.items():
+                if sid in sessions:
+                    sessions[sid]["sub_usage"] = u
         for k in list(entries):
             if k not in seen:
                 del entries[k]
@@ -779,6 +883,11 @@ def session_json(s):
     d = {k: s.get(k) for k in keep}
     d["last_text"] = (s.get("last_text") or "")[-4000:]
     d["last_prompt"] = (s.get("last_prompt") or "")[-1500:]
+    d["usage"] = s.get("usage") or empty_usage()
+    d["sub_usage"] = s.get("sub_usage") or empty_usage()
+    d["context"] = s.get("context") or 0
+    d["model"] = s.get("model")
+    d["context_limit"] = context_limit(s.get("model"), d["context"])
     d["project"] = os.path.basename(s.get("cwd") or "") or "?"
     d["cwd_short"] = short_path(s.get("cwd"))
     return d
@@ -817,7 +926,7 @@ class Dashboard:
             "version": VERSION, "sessions": sessions, "counts": counts,
             "groups": [{"key": g, "label": l} for g, l in GROUPS],
             "states": {k: {"group": g, "label": l} for k, (g, l) in STATES.items()},
-            "gh": bool(shutil.which("gh")), "hooks": hooks_installed(),
+            "gh": bool(shutil.which("gh")), "hooks": hooks_active(),
             "default_days": DEFAULT_DAYS,
         }
         etag = hashlib.sha1(json.dumps(snap, sort_keys=True).encode()).hexdigest()[:16]
@@ -1048,13 +1157,16 @@ def cmd_list(args):
         save_json(LAST_LIST_FILE, numbered)
     except OSError:
         pass
-    if rows and not hooks_installed():
-        print(dim("\nTip: `ccdeck install` adds hooks (exact live states) and the dashboard."))
+    if rows and not hooks_active():
+        print(dim("\nTip: install the ccdeck plugin (or run `ccdeck install`) for exact live states and the dashboard."))
     elif daemon_running():
         print(dim(f"\nDashboard: http://localhost:{load_json(DAEMON_FILE, {}).get('port', DEFAULT_PORT)}"))
 
 
-def resolve(ref):
+UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+
+
+def resolve(ref, allow_unknown=False):
     if ref.isdigit() and len(ref) < 4:
         listed = load_json(LAST_LIST_FILE, [])
         i = int(ref) - 1
@@ -1062,6 +1174,9 @@ def resolve(ref):
             ref = listed[i]
     rows = collect(include_all=True, days=10 ** 6)
     hits = [r for r in rows if r["id"].startswith(ref)]
+    if not hits and allow_unknown and UUID_RE.fullmatch(ref):
+        # e.g. /ccdeck:done in a session whose first prompt isn't saved yet
+        return {"id": ref, "title": "this session", "mark": {}}
     if not hits:
         sys.exit(f"No session matches '{ref}'.")
     if len(hits) > 1:
@@ -1083,6 +1198,14 @@ def cmd_show(args):
           f"last activity {ago(s['last_ts'])} ago   prompts {s['prompts']}")
     if m.get("note"):
         print(f"  note      {m['note']}")
+    u, sub = s.get("usage") or empty_usage(), s.get("sub_usage") or empty_usage()
+    if any(u.values()):
+        lim = context_limit(s.get("model"), s.get("context") or 0)
+        print(f"  context   {fmt_tokens(s.get('context') or 0)} / {fmt_tokens(lim)}"
+              f" ({100 * (s.get('context') or 0) / lim:.0f}%)" + (f"   model {s['model']}" if s.get("model") else ""))
+        print(f"  tokens    output {fmt_tokens(u['output'])}   input {fmt_tokens(u['input'] + u['cache_write'])}"
+              f"   cache reads {fmt_tokens(u['cache_read'])}"
+              + (f"   (+ subagents: output {fmt_tokens(sub['output'])})" if any(sub.values()) else ""))
     if s["pr_details"]:
         print(bold("\nPull requests"))
         for p in s["pr_details"]:
@@ -1121,7 +1244,7 @@ def cmd_show(args):
 
 def cmd_mark(action):
     def run(args):
-        s = resolve(args.id)
+        s = resolve(args.id, allow_unknown=True)
         text = " ".join(getattr(args, "text", None) or []) or None
         apply_action(s["id"], action, text)
         if action == "done" and text:
@@ -1173,6 +1296,9 @@ def cmd_hook(_args):
     path = STATE_DIR / f"{sid}.json"
     state = load_json(path, {})
     prev = state.get("status")
+    if (event == state.get("event") and event != "PostToolUse"
+            and time.time() - (state.get("ts") or 0) < 1.0):
+        return  # same event twice (hooks installed both as a plugin and in settings.json)
     state.update(session_id=sid, event=event, ts=time.time(),
                  cwd=data.get("cwd") or state.get("cwd"))
     if not pid_alive(state.get("pid"), state.get("pid_start")):
@@ -1182,6 +1308,7 @@ def cmd_hook(_args):
 
     if event == "SessionStart":
         state["status"] = "idle"
+        autostart_daemon()
     elif event == "Stop":
         state["status"] = "stopped"
     elif event in ("UserPromptSubmit", "PostToolUse"):
@@ -1207,6 +1334,32 @@ def cmd_hook(_args):
     save_json(path, state)
 
 
+def autostart_daemon():
+    """Start the dashboard in the background if nothing serves it (plugin installs have no service)."""
+    if os.environ.get("CCDECK_AUTOSTART", "1") == "0" or UNIT_FILE.exists() or daemon_running():
+        return
+    import fcntl
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        lock = open(DATA_DIR / "autostart.lock", "a+")
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        return  # another hook is starting it right now
+    with lock:
+        lock.seek(0)
+        last = lock.read().strip()
+        if last.replace(".", "", 1).isdigit() and time.time() - float(last) < 30:
+            return
+        lock.seek(0)
+        lock.truncate()
+        lock.write(str(time.time()))
+        lock.flush()
+        log = open(DATA_DIR / "serve.log", "ab")
+        subprocess.Popen([sys.executable, str(SCRIPT), "serve", "--port", str(DEFAULT_PORT)],
+                         stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True,
+                         close_fds=True)
+
+
 # ------------------------------------------------------------------- install
 
 def hook_command():
@@ -1224,6 +1377,17 @@ def hooks_installed():
         return False
     return any(is_our_hook(h) for gs in hooks.values() if isinstance(gs, list)
                for g in gs if isinstance(g, dict) for h in g.get("hooks", []))
+
+
+def hooks_active():
+    """Hooks from settings.json, or from the plugin (seen as state files written recently)."""
+    if hooks_installed():
+        return True
+    cutoff = time.time() - 7 * 86400
+    try:
+        return any(p.stat().st_mtime > cutoff for p in STATE_DIR.glob("*.json"))
+    except OSError:
+        return False
 
 
 def load_settings_strict():

@@ -15,19 +15,47 @@ You get a live dashboard in the browser at `http://localhost:7799`, served by a 
 
 ## Install
 
+### As a Claude Code plugin (recommended)
+
+In Claude Code:
+
+```text
+/plugin install ccdeck --marketplace slonik923/ccdeck
+```
+
+On Claude Code older than 2.1.275, run `/plugin marketplace add slonik923/ccdeck` first, then `/plugin install ccdeck@ccdeck`. Restart Claude Code or run `/reload-plugins`.
+
+That's all. When a session starts, the plugin's hooks:
+- record each session's live state (working, waiting for permission, finished, closed);
+- start the dashboard in the background if it isn't already running.
+
+Open it at `http://localhost:7799`, or with `/ccdeck:dashboard`.
+
+For PR states, also run `sudo apt install gh` and then `gh auth login`.
+
+The plugin adds these commands to Claude Code:
+
+| Command | What it does |
+|---|---|
+| `/ccdeck:dashboard` | Prints the dashboard's address and opens it in your browser |
+| `/ccdeck:done [note]` | Marks the current session done, with an optional note |
+| `/ccdeck:park [note]` | Sets the current session aside for later |
+
+### From a clone (always-on service, `ccdeck` command)
+
+To get the `ccdeck` terminal command, have the dashboard running from login even before you open Claude Code, and get an app launcher entry:
+
 ```bash
 git clone https://github.com/slonik923/ccdeck.git ~/ccdeck
-~/ccdeck/ccdeck install
+~/ccdeck/ccdeck install            # add --no-hooks if you also use the plugin
 ```
 
 `install` does four things:
 
 1. **Command.** It links `~/.local/bin/ccdeck` to the script in the clone, so `git pull` updates it.
-2. **Hooks.** It adds hooks to `~/.claude/settings.json` and saves a backup as `settings.json.bak-ccdeck` first. Each session then reports its exact live state: working, waiting for permission, finished, closed. The hooks apply to sessions started or resumed after you install.
+2. **Hooks.** It adds the same hooks to `~/.claude/settings.json`, after saving a backup as `settings.json.bak-ccdeck`. Skip this with `--no-hooks` when you use the plugin. Having both is harmless: a duplicate event is ignored.
 3. **Background service.** It adds a systemd user service, `ccdeck.service`. The service starts at login, restarts if it crashes, keeps PR states up to date and sends the notifications.
 4. **App launcher.** It adds a **ccdeck** entry that opens the dashboard.
-
-For PR states, also run `sudo apt install gh` and then `gh auth login`.
 
 Options: `--port 8123`, `--no-hooks`, `--no-service`. To remove everything: `ccdeck uninstall`. Your marks and notes stay in `~/.claude/ccdeck/`.
 
@@ -57,6 +85,7 @@ Sessions are grouped by what they need from you. The dashboard refreshes every 2
 
 Each card shows:
 - the title, folder, branch and number of prompts
+- **token usage**: a bar showing how full the context window is, plus output and input tokens. Subagents are included, and hovering shows the breakdown, including cache reads
 - the last message: Claude's reply, the permission request, or your own prompt (click it to expand)
 - PRs with their live state
 - links to artifacts, Notion, Linear, Figma and Google Docs
@@ -95,6 +124,8 @@ ccdeck serve           run the dashboard in the foreground (instead of the servi
 - **Hooks.** The hooks (`SessionStart`, `UserPromptSubmit`, `PostToolUse`, `Notification`, `Stop`, `SessionEnd`) write a small state file for each session to `~/.claude/ccdeck/state/`. That's how the tool knows exactly whether a session is working, waiting for permission or finished. The file also records the Claude process, so a crashed session isn't shown as running. Without hooks, these states are guessed from running `claude` processes and the end of each transcript.
 - **PR states.** `gh pr view` is called for PRs in sessions that aren't done. Open PRs are re-checked every 3 minutes, and every minute while CI is running.
 - **The server** listens only on `127.0.0.1`. The API needs a random token, stored in `~/.claude/ccdeck/token`, which only the dashboard page receives. Requests whose `Host` header isn't localhost are rejected. Together, these stop other websites from reading your sessions or opening terminals.
+- **Token usage** comes from the `usage` that Claude Code saves with each response. Each response is counted once, even though it's saved on several entries. The context bar uses the size of the latest request against the model's window: 1M for current models, 200K for Claude Haiku 4.5 and older models. To use a different limit, set `CCDECK_CONTEXT_LIMIT`. Tokens are shown rather than dollars, because many people use Claude Code on a subscription and prices differ by model.
+- **Dashboard autostart.** With the plugin, the `SessionStart` hook starts `ccdeck serve` in the background when nothing answers on the port; it logs to `~/.claude/ccdeck/serve.log`. It doesn't do this when the systemd service is installed. To turn it off, set `CCDECK_AUTOSTART=0`.
 - **Notifications** use `notify-send` when a session moves into *Needs you*, *PRs to look at* or *Finished*. To turn them off, set `CCDECK_NOTIFY=0`, for example with `systemctl --user edit ccdeck`.
 
 ## Limits

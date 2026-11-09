@@ -24,6 +24,7 @@ TMP = Path(tempfile.mkdtemp(prefix="ccdeck-test-"))
 os.environ["HOME"] = str(TMP)
 os.environ.pop("CLAUDE_CONFIG_DIR", None)
 os.environ["CCDECK_NOTIFY"] = "0"
+os.environ["CCDECK_AUTOSTART"] = "0"
 
 FAKE_GH = TMP / "bin" / "gh"
 FAKE_GH.parent.mkdir(parents=True)
@@ -120,6 +121,28 @@ def build_fixtures():
         f.write('[1,2]\n"str"\n{"type":"user","message":"oops"}\nnot json\n')
 
 
+def usage_msg(mid, inp, cw, cr, out, m, model="claude-opus-5-5", blocks=None):
+    return {"type": "assistant", "cwd": str(WORK), "timestamp": ts(m), "requestId": "r" + mid,
+            "message": {"id": mid, "role": "assistant", "model": model, "content": blocks or [text("ok")],
+                        "usage": {"input_tokens": inp, "cache_creation_input_tokens": cw,
+                                  "cache_read_input_tokens": cr, "output_tokens": out}}}
+
+
+def build_usage_fixture():
+    write_session("s-usage", [
+        user("count", 30),
+        usage_msg("m1", 10, 1000, 5000, 200, 29, blocks=[tool("t1", "Read")]),
+        usage_msg("m1", 10, 1000, 5000, 200, 29, blocks=[text("same message, second block")]),  # duplicate id
+        result("t1", 29),
+        usage_msg("m2", 5, 500, 6000, 300, 28),
+    ])
+    sub = PROJ / "s-usage" / "subagents"
+    sub.mkdir(parents=True, exist_ok=True)
+    with open(sub / "agent-x.jsonl", "w") as f:
+        f.write(json.dumps(usage_msg("s1", 1, 100, 0, 50, 28)) + "\n")
+    write_session("s-old-model", [user("hi", 30), usage_msg("o1", 1, 0, 150000, 10, 29, model="claude-haiku-4-5")])
+
+
 def by_id(rows):
     return {r["id"]: r for r in rows}
 
@@ -180,6 +203,24 @@ class ClassifyTest(unittest.TestCase):
             self.assertEqual(by_id(cc.collect(True, 10 ** 6))["s-closed"]["state"], "parked")
         finally:
             cc.apply_action("s-closed", "unpark")
+
+
+class UsageTest(unittest.TestCase):
+    def test_tokens_counted_once_and_context(self):
+        build_usage_fixture()
+        rows = by_id(cc.collect(True, 10 ** 6))
+        s = cc.session_json(rows["s-usage"])
+        self.assertEqual(s["usage"], {"input": 15, "cache_write": 1500, "cache_read": 11000, "output": 500})
+        self.assertEqual(s["sub_usage"]["output"], 50)
+        self.assertEqual(s["context"], 5 + 500 + 6000)
+        self.assertEqual(s["context_limit"], 1_000_000)
+        self.assertEqual(s["model"], "claude-opus-5-5")
+        old = cc.session_json(rows["s-old-model"])
+        self.assertEqual(old["context_limit"], 200_000)
+
+    def test_fmt_tokens(self):
+        self.assertEqual([cc.fmt_tokens(n) for n in (0, 999, 92_400, 1_000_000, 15_500_000)],
+                         ["0", "999", "92k", "1M", "15.5M"])
 
 
 class HookTest(unittest.TestCase):
