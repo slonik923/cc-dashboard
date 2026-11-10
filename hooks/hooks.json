@@ -46,7 +46,53 @@
         ]
       }
     ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/ccdeck",
+              "hook"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
     "Notification": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/ccdeck",
+              "hook"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/ccdeck",
+              "hook"
+            ],
+            "timeout": 1800
+          }
+        ]
+      }
+    ],
+    "PermissionDenied": [
       {
         "hooks": [
           {
