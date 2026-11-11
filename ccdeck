@@ -58,7 +58,7 @@ WEB_DIR = SCRIPT.parent / "web"
 UNIT_FILE = HOME / ".config" / "systemd" / "user" / "ccdeck.service"
 DESKTOP_FILE = HOME / ".local" / "share" / "applications" / "ccdeck.desktop"
 DEFAULT_PORT = int(os.environ.get("CCDECK_PORT", "7799"))
-CACHE_VERSION = 5
+CACHE_VERSION = 6
 DEFAULT_DAYS = 14
 QUIET_AFTER = 15 * 60  # "working" with no activity for this long => probably interrupted
 HOOK_EVENTS = ["SessionStart", "UserPromptSubmit", "PostToolUse", "PostToolUseFailure", "Notification",
@@ -378,15 +378,36 @@ def asks_decision(text):
     return last_para.rstrip().endswith("?") or bool(DECISION_RE.search(last_para))
 
 
+def summarize_tool_input(name, inp):
+    """A short, human-readable form of what a tool call wants to do (shown while it waits)."""
+    try:
+        if name == "Bash":
+            return str(inp.get("command") or "")[:400] or None
+        if name in WRITE_TOOLS or name == "Read":
+            return str(inp.get("file_path") or inp.get("notebook_path") or "")[:400] or None
+        if name in ("WebFetch", "WebSearch"):
+            return str(inp.get("url") or inp.get("query") or "")[:400] or None
+        if name == "AskUserQuestion":
+            qs = inp.get("questions") or []
+            if qs and isinstance(qs[0], dict):
+                return str(qs[0].get("question") or "")[:600] or None
+            return None
+        if name == "ExitPlanMode":
+            return str(inp.get("plan") or "")[:2000] or None
+        return json.dumps(inp, ensure_ascii=False)[:400] if inp else None
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
 def parse_transcript(path):
     info = {
         "id": path.stem, "cwd": None, "branch": None, "title": None, "ai_title": None,
         "summary": None, "first_prompt": None, "last_prompt": None, "prompts": 0,
         "first_ts": 0.0, "last_ts": 0.0, "last_role": None, "last_text": "",
-        "api_error": False, "pending_tool": None, "prs": [], "links": {}, "files": [],
+        "api_error": False, "pending_tool": None, "pending_input": None, "prs": [], "links": {}, "files": [],
         "usage": empty_usage(), "context": 0, "model": None,
     }
-    prs, files, links, tool_names, pending = {}, {}, {}, {}, {}
+    prs, files, links, tool_names, pending, pending_inputs = {}, {}, {}, {}, {}, {}
     seen_msgs = set()
 
     def add_links(text):
@@ -469,6 +490,7 @@ def parse_transcript(path):
                     inp = b.get("input") if isinstance(b.get("input"), dict) else {}
                     tool_names[b.get("id")] = name
                     pending[b.get("id")] = name
+                    pending_inputs[b.get("id")] = summarize_tool_input(name, inp)
                     info["last_role"] = "tool"
                     if name in WRITE_TOOLS:
                         fp = inp.get("file_path") or inp.get("notebook_path")
@@ -479,6 +501,7 @@ def parse_transcript(path):
                         if "gh pr create" in cmd or "git push" in cmd:
                             tool_names[b.get("id")] = "Bash:create"
     info["pending_tool"] = list(pending.values())[-1] if pending else None
+    info["pending_input"] = pending_inputs.get(list(pending)[-1]) if pending else None
     info["prs"] = list(prs)
     info["links"] = {k: list(v) for k, v in links.items()}
     info["files"] = list(files)
@@ -882,7 +905,7 @@ def open_path(target):
 
 def session_json(s):
     keep = ("id", "display_title", "title", "cwd", "branch", "first_ts", "last_ts", "prompts",
-            "last_role", "pending_tool", "links", "files", "alive", "live_source",
+            "last_role", "pending_tool", "pending_input", "links", "files", "alive", "live_source",
             "mark", "pr_details", "state", "group", "label", "hook_message")
     d = {k: s.get(k) for k in keep}
     d["last_text"] = (s.get("last_text") or "")[-4000:]
@@ -931,7 +954,7 @@ class Dashboard:
             "groups": [{"key": g, "label": l} for g, l in GROUPS],
             "states": {k: {"group": g, "label": l} for k, (g, l) in STATES.items()},
             "gh": bool(shutil.which("gh")), "hooks": hooks_active(),
-            "default_days": DEFAULT_DAYS,
+            "default_days": DEFAULT_DAYS, "port": self.port,
         }
         etag = hashlib.sha1(json.dumps(snap, sort_keys=True).encode()).hexdigest()[:16]
         snap["generated"] = time.time()
@@ -1057,8 +1080,14 @@ class Dashboard:
                     return self._send(200, html.encode(), "text/html; charset=utf-8", {
                         "Content-Security-Policy":
                             "default-src 'self'; script-src 'unsafe-inline'; "
-                            "style-src 'unsafe-inline'; img-src 'self' data:; "
+                            "style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
                             "connect-src 'self'; frame-ancestors 'none'"})
+                if path == "/ccdeck.css":
+                    try:
+                        css = (WEB_DIR / "ccdeck.css").read_bytes()
+                    except OSError:
+                        return self._send(404, {"error": "not found"})
+                    return self._send(200, css, "text/css; charset=utf-8")
                 if path == "/api/sessions":
                     if self.headers.get("X-CC-Token") != dash.token:
                         return self._send(403, {"error": "bad token"})

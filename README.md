@@ -63,6 +63,14 @@ Options: `--port 8123`, `--no-hooks`, `--no-service`. To remove everything: `ccd
 
 ## The dashboard
 
+The page is laid out to answer "what needs me?" first:
+- **Needs you** is a queue, oldest first, next to a focus panel. The panel shows the selected session in full: Claude's message and the exact command it wants to run.
+- **PRs to look at** are cards.
+- Everything else is a compact row, with actions in a menu (or the keyboard).
+- The strip of lines under the header has one line per session, coloured by its state.
+
+Click a title, or press Enter, for the detail drawer: the full message, resume command, PRs, links, files, tokens, and your note. The page is dark only.
+
 Sessions are grouped by what they need from you. The dashboard refreshes every 2 seconds. The browser tab title and icon show how many sessions need you.
 
 | Group | State | Meaning |
@@ -100,7 +108,7 @@ Each card has these buttons:
 - **↻ PRs** re-checks the PR states now.
 - **Park**, **Note** and **Done ✓** set your own marks on the session.
 
-Keyboard: `/` jumps to the filter box and `Esc` clears it.
+Keyboard: `/` jumps to the filter box, `j` / `k` move between sessions, `Enter` opens the details, `r` resumes, `.` opens the actions menu (then `C` `O` `R` `P` `N` `D`), and `Esc` closes whatever is open.
 
 The terminal used for **Resume ▸** is the first one found from GNOME Terminal, Ptyxis, Console, Konsole, xfce4-terminal, Tilix, kitty, Alacritty and xterm. To choose a different one, set `CCDECK_TERMINAL`, for example `CCDECK_TERMINAL="wezterm start --"`.
 

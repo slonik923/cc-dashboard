@@ -436,6 +436,12 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(code, 200)
         self.assertIn(self.dash.token.encode(), body)
 
+    def test_stylesheet_served(self):
+        code, body = self.req("/ccdeck.css", token=False)
+        self.assertEqual(code, 200)
+        self.assertIn(b'data-theme="alpine-gm3a"', body)
+        self.assertEqual(self.req("/../ccdeck", token=False)[0], 404)
+
     def test_api_requires_token_and_host(self):
         self.assertEqual(self.req("/api/sessions", token=False)[0], 403)
         self.assertEqual(self.req("/api/sessions", host="evil.example:80")[0], 403)
