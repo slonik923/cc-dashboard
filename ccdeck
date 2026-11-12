@@ -3,7 +3,7 @@
 
 A terminal list and a live dashboard (http://localhost:7799) for every Claude
 Code session on this machine: which are open, which need you, which have a PR
-waiting for review, and which are done. Python 3.8+ standard library only;
+waiting for review, and which are done. Python 3.9+ standard library only;
 `gh` (GitHub CLI) is used for PR states when installed.
 
     ccdeck                 sessions grouped by what they need
