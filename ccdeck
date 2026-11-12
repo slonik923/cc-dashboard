@@ -38,7 +38,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
-VERSION = "0.4.2"
+VERSION = "0.4.3"
 HOME = Path.home()
 CLAUDE_DIR = Path(os.environ.get("CLAUDE_CONFIG_DIR", HOME / ".claude"))
 PROJECTS_DIR = CLAUDE_DIR / "projects"
@@ -1251,8 +1251,24 @@ class Dashboard:
             try:
                 self.refresh()
                 self.heartbeat()
+                self.maybe_upgrade()
             except Exception as e:  # keep the daemon alive no matter what
                 print(f"scan error: {e!r}", file=sys.stderr)
+
+    def maybe_upgrade(self):
+        """Restart into a newer ccdeck that the session hooks report (a plugin update), in place."""
+        if time.time() - getattr(self, "_upgrade_checked", 0) < 10:
+            return
+        self._upgrade_checked = time.time()
+        target = newer_install()
+        if not target:
+            return
+        print(f"ccdeck {target[0]} is installed (this is {VERSION}); restarting into {target[1]}", flush=True)
+        try:
+            DAEMON_FILE.unlink()
+        except OSError:
+            pass
+        os.execv(sys.executable, [sys.executable, target[1], "serve", "--port", str(self.port)])
 
     def pr_loop(self):
         while True:
@@ -1337,7 +1353,7 @@ class Dashboard:
                         html = (WEB_DIR / "index.html").read_text(encoding="utf-8")
                     except OSError:
                         return self._send(500, {"error": "web/index.html missing"})
-                    html = html.replace("__CC_TOKEN__", dash.token)
+                    html = html.replace("__CC_TOKEN__", dash.token).replace("__CC_VERSION__", VERSION)
                     return self._send(200, html.encode(), "text/html; charset=utf-8", {
                         "Content-Security-Policy":
                             "default-src 'self'; script-src 'unsafe-inline'; "
@@ -1382,6 +1398,7 @@ class Dashboard:
         return Handler
 
     def serve(self):
+        adopt_stable_copy()
         self.refresh()
         self.heartbeat()
         threading.Thread(target=self.scan_loop, daemon=True).start()
@@ -1398,6 +1415,66 @@ class Dashboard:
                 DAEMON_FILE.unlink()
             except OSError:
                 pass
+
+
+def version_tuple(v):
+    try:
+        return tuple(int(x) for x in str(v).split("."))
+    except ValueError:
+        return ()
+
+
+def newer_install():
+    """(version, script) of the newest ccdeck the hooks ran from in the last day, if newer than this one."""
+    best = None
+    cutoff = time.time() - 86400
+    for st in load_states().values():
+        c = st.get("ccdeck") if isinstance(st.get("ccdeck"), dict) else None
+        if not c or (st.get("ts") or 0) < cutoff:
+            continue
+        v, script = str(c.get("version") or ""), str(c.get("script") or "")
+        if version_tuple(v) > version_tuple(VERSION) and (best is None or version_tuple(v) > version_tuple(best[0])):
+            best = (v, script)
+    if not best or not os.path.isfile(best[1]):
+        return None
+    try:  # the file must really be that version (guards against a loop)
+        head = Path(best[1]).read_text(encoding="utf-8", errors="replace")[:4000]
+    except OSError:
+        return None
+    m = re.search(r'^VERSION = "([\d.]+)"', head, re.M)
+    return best if m and version_tuple(m.group(1)) > version_tuple(VERSION) else None
+
+
+def adopt_stable_copy():
+    """A dashboard started from the plugin's versioned cache copies itself to STABLE_DIR and points an
+    installed service there, so the next login doesn't start a deleted or outdated version."""
+    if not running_from_plugin() or not service_installed():
+        return
+    try:
+        if stable_version() != VERSION:
+            sync_stable_copy()
+        stable = str(STABLE_DIR / "ccdeck")
+        if PLIST_FILE.exists():
+            import plistlib
+            with open(PLIST_FILE, "rb") as f:
+                pl = plistlib.load(f)
+            args = pl.get("ProgramArguments") or []
+            if len(args) > 1 and args[1] != stable:
+                args[1] = stable
+                with open(PLIST_FILE, "wb") as f:
+                    plistlib.dump(pl, f)
+        if UNIT_FILE.exists():
+            text = UNIT_FILE.read_text()
+            new = re.sub(r"^(ExecStart=\S+) (\S+) serve", lambda m: f"{m.group(1)} {stable} serve", text, flags=re.M)
+            if new != text:
+                UNIT_FILE.write_text(new)
+                systemctl("daemon-reload")
+        link = HOME / ".local" / "bin" / "ccdeck"
+        if link.is_symlink() and "/.claude/plugins/" in os.readlink(link):
+            link.unlink()
+            link.symlink_to(stable)
+    except Exception as e:
+        print(f"could not move the service to {STABLE_DIR}: {e!r}", file=sys.stderr)
 
 
 def daemon_running():
@@ -1610,7 +1687,8 @@ def cmd_hook(_args):
             and time.time() - (state.get("ts") or 0) < 1.0):
         return  # same event twice (hooks installed both as a plugin and in settings.json)
     state.update(session_id=sid, event=event, ts=time.time(),
-                 cwd=data.get("cwd") or state.get("cwd"))
+                 cwd=data.get("cwd") or state.get("cwd"),
+                 ccdeck={"version": VERSION, "script": str(SCRIPT)})  # lets a running dashboard upgrade itself
     if not pid_alive(state.get("pid"), state.get("pid_start")):
         pid = find_claude_ancestor()
         if pid:

@@ -84,6 +84,7 @@
 <script>
 "use strict";
 const TOKEN = "__CC_TOKEN__";
+const PAGE_VERSION = "__CC_VERSION__";
 const SVGNS = "http://www.w3.org/2000/svg";
 
 // ---- states and groups, as in the design ----
@@ -199,6 +200,7 @@ async function load() {
     if (r.status === 304) { if (wasOffline) render(); else renderLive(); return; }
     etag = r.headers.get("ETag") || "";
     data = await r.json();
+    if (data.version && PAGE_VERSION.indexOf("__") !== 0 && data.version !== PAGE_VERSION) { location.reload(); return; }
     render();
   } catch (e) {
     failures++;
@@ -593,7 +595,7 @@ function render() {
   document.title = (needN ? `(${needN}) ` : "") + "ccdeck";
   setFavicon(needN, needN ? "#E9887D" : prN ? "#C393C2" : count("work") ? "#F0B44C" : "#10b981");
   $("needBadge").hidden = !needN || isOff; $("needBadge").textContent = needN;
-  $("host").textContent = "localhost:" + data.port;
+  $("host").textContent = "localhost:" + data.port + " · v" + data.version;
   $("cDone").textContent = doneN; $("tDone").setAttribute("aria-pressed", ui.showDone ? "true" : "false");
   $("cOld").textContent = oldClosed; $("tOld").setAttribute("aria-pressed", ui.showOld ? "true" : "false");
   renderHint(); renderLegend(); renderContours(all, isOff);
@@ -660,7 +662,7 @@ function render() {
   if (!isOff && ui.filter === "all" && !ui.showDone && doneN) out.push(h("div", { class: "more-line", style: "margin-top: 32px" }, ic("check-circle", "i-sm"),
     h("span", {}, doneN + " done sessions hidden"), h("button", { class: "linkbtn", onclick: toggleDone }, "Show"), h("span", { class: "rule" })));
   out.push(h("footer", { class: "foot" },
-    h("span", {}, ic("refresh", "i-sm"), isOff ? "Paused · last good update " + agoText(Math.round((Date.now() - lastOk) / 1000)) : "Refreshes every 2 s · " + all.length + " sessions on this machine"),
+    h("span", {}, ic("refresh", "i-sm"), isOff ? "Paused · last good update " + agoText(Math.round((Date.now() - lastOk) / 1000)) : "ccdeck " + data.version + " · refreshes every 2 s · " + all.length + " sessions on this machine"),
     h("span", {}, h("span", { class: "kbd" }, "/"), " filter"), h("span", {}, h("span", { class: "kbd" }, "j"), h("span", { class: "kbd" }, "k"), " move"),
     h("span", {}, h("span", { class: "kbd" }, "↵"), " details"), h("span", {}, h("span", { class: "kbd" }, "r"), " resume"),
     h("span", {}, h("span", { class: "kbd" }, "."), " actions")));
