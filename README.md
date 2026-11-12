@@ -159,6 +159,8 @@ python3 -m unittest discover -s tests -v
 
 The tests run against a throwaway `HOME` with synthetic transcripts and a fake `gh`.
 
+**Releasing.** Claude Code updates an installed plugin only when the `version` in `.claude-plugin/plugin.json` changes. Bump it, and `VERSION` in `ccdeck` with it, in every release; CI checks that the two match. Users then get the update with `/plugin marketplace update ccdeck`, followed by `/plugin update ccdeck@ccdeck`.
+
 ## License and affiliation
 
 MIT, see `LICENSE`. ccdeck is an independent project and is not affiliated with or endorsed by Anthropic. "Claude" and "Claude Code" are trademarks of Anthropic.
