@@ -491,7 +491,8 @@ class PluginInstallTest(unittest.TestCase):
         r = self.run_ccdeck(root / "ccdeck", "install", "--no-hooks", "--no-service")
         self.assertEqual(r.returncode, 0, r.stderr)
         link = TMP / ".local" / "bin" / "ccdeck"
-        self.assertEqual(Path(os.readlink(link)), cc.STABLE_DIR / "ccdeck")
+        # resolve(): on macOS the temp HOME lives under /var, a symlink to /private/var
+        self.assertEqual(Path(os.readlink(link)).resolve(), (cc.STABLE_DIR / "ccdeck").resolve())
         self.assertEqual((cc.STABLE_DIR / "VERSION").read_text().strip(), "9.1.0")
         self.assertTrue((cc.STABLE_DIR / "web" / "index.html").exists())
 
