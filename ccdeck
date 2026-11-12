@@ -38,7 +38,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
 
-VERSION = "0.4.0"
+VERSION = "0.4.1"
 HOME = Path.home()
 CLAUDE_DIR = Path(os.environ.get("CLAUDE_CONFIG_DIR", HOME / ".claude"))
 PROJECTS_DIR = CLAUDE_DIR / "projects"
@@ -57,6 +57,7 @@ SCRIPT = Path(__file__).resolve()
 WEB_DIR = SCRIPT.parent / "web"
 IS_MAC = sys.platform == "darwin"
 UNIT_FILE = HOME / ".config" / "systemd" / "user" / "ccdeck.service"
+STABLE_DIR = HOME / ".local" / "share" / "ccdeck"  # a copy that survives plugin updates
 LAUNCHD_LABEL = "io.github.slonik923.ccdeck"
 GH_INSTALL = "brew install gh" if IS_MAC else "sudo apt install gh"
 PLIST_FILE = HOME / "Library" / "LaunchAgents" / f"{LAUNCHD_LABEL}.plist"
@@ -1408,10 +1409,20 @@ def cmd_serve(args):
 
 
 def cmd_open(args):
-    port = load_json(DAEMON_FILE, {}).get("port") or args.port
     if not daemon_running():
-        print("The dashboard isn't running. Start it with `ccdeck install` (background) "
-              "or `ccdeck serve` (foreground).")
+        print("Starting the dashboard…")
+        if service_installed():
+            restart_service()
+        else:
+            autostart_daemon(force=True)
+        for _ in range(30):
+            time.sleep(0.2)
+            if daemon_running():
+                break
+        else:
+            print(f"It didn't start; see {short_path(DATA_DIR / 'serve.log')}. "
+                  "You can also run `ccdeck serve` in a terminal.")
+    port = load_json(DAEMON_FILE, {}).get("port") or args.port
     url = f"http://localhost:{port}"
     print(url)
     open_path(url)
@@ -1446,6 +1457,7 @@ def cmd_hook(_args):
 
     if event == "SessionStart":
         state["status"] = "idle"
+        refresh_stable_copy()
         autostart_daemon()
     elif event == "Stop":
         state["status"] = "stopped"
@@ -1656,9 +1668,13 @@ def cmd_approvals(args):
         print("Permission prompts can now be allowed or denied in the dashboard; the terminal still works too.")
 
 
-def autostart_daemon():
-    """Start the dashboard in the background if nothing serves it (plugin installs have no service)."""
-    if os.environ.get("CCDECK_AUTOSTART", "1") == "0" or service_installed() or daemon_running():
+def autostart_daemon(force=False):
+    """Start the dashboard in the background if nothing serves it (plugin installs have no service).
+
+    force: asked for explicitly (`ccdeck open`), so CCDECK_AUTOSTART and the retry pause don't apply."""
+    if daemon_running():
+        return
+    if not force and (os.environ.get("CCDECK_AUTOSTART", "1") == "0" or service_installed()):
         return
     import fcntl
     DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -1670,19 +1686,67 @@ def autostart_daemon():
     with lock:
         lock.seek(0)
         last = lock.read().strip()
-        if last.replace(".", "", 1).isdigit() and time.time() - float(last) < 30:
+        if not force and last.replace(".", "", 1).isdigit() and time.time() - float(last) < 30:
             return
         lock.seek(0)
         lock.truncate()
         lock.write(str(time.time()))
         lock.flush()
         log = open(DATA_DIR / "serve.log", "ab")
-        subprocess.Popen([sys.executable, str(SCRIPT), "serve", "--port", str(DEFAULT_PORT)],
+        script = STABLE_DIR / "ccdeck" if running_from_plugin() and (STABLE_DIR / "ccdeck").exists() else SCRIPT
+        subprocess.Popen([sys.executable, str(script), "serve", "--port", str(DEFAULT_PORT)],
                          stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True,
                          close_fds=True)
 
 
 # ------------------------------------------------------------------- install
+
+def running_from_plugin():
+    """True when this file is Claude Code's copy of the plugin (a versioned cache folder)."""
+    return "/.claude/plugins/" in str(SCRIPT)
+
+
+def stable_version():
+    try:
+        return (STABLE_DIR / "VERSION").read_text().strip()
+    except OSError:
+        return None
+
+
+def sync_stable_copy():
+    """Copy this version of ccdeck to STABLE_DIR, where the command and the service point."""
+    STABLE_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = STABLE_DIR / ".ccdeck.tmp"
+    shutil.copy2(SCRIPT, tmp)
+    os.chmod(tmp, 0o755)
+    os.replace(tmp, STABLE_DIR / "ccdeck")
+    web = STABLE_DIR / "web"
+    if web.exists():
+        shutil.rmtree(web)
+    shutil.copytree(WEB_DIR, web)
+    (STABLE_DIR / "VERSION").write_text(VERSION + "\n")
+
+
+def refresh_stable_copy():
+    """After a plugin update, bring the stable copy (and a running service) to the new version."""
+    try:
+        if not running_from_plugin() or not (STABLE_DIR / "ccdeck").exists() or stable_version() == VERSION:
+            return
+        sync_stable_copy()
+        if service_installed():
+            restart_service()
+    except Exception as e:
+        print(f"ccdeck: could not refresh {STABLE_DIR}: {e!r}", file=sys.stderr)
+
+
+def restart_service():
+    if PLIST_FILE.exists():
+        r = launchctl("kickstart", "-k", f"gui/{os.getuid()}/{LAUNCHD_LABEL}")
+        if r.returncode != 0:
+            launchctl("bootstrap", f"gui/{os.getuid()}", str(PLIST_FILE))
+    elif UNIT_FILE.exists():
+        systemctl("restart", "ccdeck.service")
+
 
 def hook_command():
     return f"{shlex.quote(str(SCRIPT))} hook"
@@ -1837,6 +1901,14 @@ Categories=Development;
 
 
 def cmd_install(args):
+    if running_from_plugin() and not os.environ.get("CCDECK_FROM_PLUGIN"):
+        sync_stable_copy()
+        print(f"Copied ccdeck {VERSION} to {short_path(STABLE_DIR)}; it is kept up to date when the plugin updates.")
+        argv = ["install", "--port", str(args.port)] + (["--no-hooks"] if args.no_hooks else []) \
+            + (["--no-service"] if args.no_service else [])
+        r = subprocess.run([sys.executable, str(STABLE_DIR / "ccdeck")] + argv,
+                           env=dict(os.environ, CCDECK_FROM_PLUGIN="1"))
+        sys.exit(r.returncode)
     bindir = HOME / ".local" / "bin"
     bindir.mkdir(parents=True, exist_ok=True)
     link = bindir / "ccdeck"
@@ -1893,6 +1965,8 @@ def cmd_uninstall(_args):
     link = HOME / ".local" / "bin" / "ccdeck"
     if link.is_symlink():
         link.unlink()
+    if (STABLE_DIR / "ccdeck").exists():
+        shutil.rmtree(STABLE_DIR, ignore_errors=True)
     print(f"Your marks and notes stay in {short_path(DATA_DIR)}.")
 
 

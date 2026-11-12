@@ -39,9 +39,12 @@ The plugin adds these commands to Claude Code:
 
 | Command | What it does |
 |---|---|
-| `/ccdeck:dashboard` | Prints the dashboard's address and opens it in your browser |
+| `/ccdeck:dashboard` | Opens the dashboard in your browser, starting it first if it isn't running |
+| `/ccdeck:install` | Adds the background service (the dashboard starts at login) and the `ccdeck` terminal command |
 | `/ccdeck:done [note]` | Marks the current session done, with an optional note |
 | `/ccdeck:park [note]` | Sets the current session aside for later |
+
+`/ccdeck:install` copies ccdeck to `~/.local/share/ccdeck`, and the service and command run from that copy. When the plugin updates, the next session refreshes the copy and restarts the service. Nothing points at the plugin's versioned cache folder.
 
 ### From a clone (always-on service, `ccdeck` command)
 

@@ -404,6 +404,50 @@ class InstallTest(unittest.TestCase):
         cc.SETTINGS_FILE.unlink()
 
 
+class PluginInstallTest(unittest.TestCase):
+    """`ccdeck install` run from Claude Code's plugin cache hands over to a stable copy."""
+
+    def plugin_copy(self, version):
+        root = TMP / ".claude" / "plugins" / "cache" / "ccdeck" / "ccdeck" / version
+        shutil.rmtree(root, ignore_errors=True)
+        (root / "web").mkdir(parents=True)
+        src = (ROOT / "ccdeck").read_text().replace('VERSION = "%s"' % cc.VERSION, 'VERSION = "%s"' % version)
+        (root / "ccdeck").write_text(src)
+        (root / "ccdeck").chmod(0o755)
+        for f in (ROOT / "web").iterdir():
+            shutil.copy(f, root / "web" / f.name)
+        return root
+
+    def run_ccdeck(self, script, *args, stdin=None):
+        import subprocess
+        env = dict(os.environ, CCDECK_AUTOSTART="0")
+        env.pop("CCDECK_FROM_PLUGIN", None)
+        return subprocess.run([sys.executable, str(script), *args], input=stdin, capture_output=True, text=True, env=env, timeout=30)
+
+    def tearDown(self):
+        shutil.rmtree(cc.STABLE_DIR, ignore_errors=True)
+        link = TMP / ".local" / "bin" / "ccdeck"
+        if link.is_symlink():
+            link.unlink()
+
+    def test_install_from_plugin_uses_stable_copy(self):
+        root = self.plugin_copy("9.1.0")
+        r = self.run_ccdeck(root / "ccdeck", "install", "--no-hooks", "--no-service")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        link = TMP / ".local" / "bin" / "ccdeck"
+        self.assertEqual(Path(os.readlink(link)), cc.STABLE_DIR / "ccdeck")
+        self.assertEqual((cc.STABLE_DIR / "VERSION").read_text().strip(), "9.1.0")
+        self.assertTrue((cc.STABLE_DIR / "web" / "index.html").exists())
+
+    def test_plugin_update_refreshes_stable_copy(self):
+        self.run_ccdeck(self.plugin_copy("9.1.0") / "ccdeck", "install", "--no-hooks", "--no-service")
+        newer = self.plugin_copy("9.2.0")
+        self.run_ccdeck(newer / "ccdeck", "hook",
+                        stdin=json.dumps({"session_id": "s-up", "hook_event_name": "SessionStart"}))
+        self.assertEqual((cc.STABLE_DIR / "VERSION").read_text().strip(), "9.2.0")
+        self.assertIn('VERSION = "9.2.0"', (cc.STABLE_DIR / "ccdeck").read_text())
+
+
 class ServerTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
