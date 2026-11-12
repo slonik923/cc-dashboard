@@ -504,6 +504,40 @@ class PluginInstallTest(unittest.TestCase):
         self.assertEqual((cc.STABLE_DIR / "VERSION").read_text().strip(), "9.2.0")
         self.assertIn('VERSION = "9.2.0"', (cc.STABLE_DIR / "ccdeck").read_text())
 
+    def test_hooks_report_newer_version_to_daemon(self):
+        newer = self.plugin_copy("9.3.0")
+        self.run_ccdeck(newer / "ccdeck", "hook",
+                        stdin=json.dumps({"session_id": "s-newer", "hook_event_name": "SessionStart"}))
+        st = json.loads((cc.STATE_DIR / "s-newer.json").read_text())
+        self.assertEqual(st["ccdeck"]["version"], "9.3.0")
+        found = cc.newer_install()
+        self.assertEqual(found[0], "9.3.0")
+        self.assertEqual(Path(found[1]).resolve(), (newer / "ccdeck").resolve())
+        # a state file that claims a version its script doesn't have is ignored
+        st["ccdeck"]["version"] = "99.0.0"
+        st["ccdeck"]["script"] = str(ROOT / "ccdeck")
+        (cc.STATE_DIR / "s-newer.json").write_text(json.dumps(st))
+        self.assertIsNone(cc.newer_install())
+        (cc.STATE_DIR / "s-newer.json").unlink()
+
+    def test_adopt_stable_copy_moves_service(self):
+        saved = (cc.running_from_plugin, cc.service_installed, cc.systemctl)
+        calls = []
+        cc.running_from_plugin = lambda: True
+        cc.service_installed = lambda: True
+        cc.systemctl = lambda *a: calls.append(a)
+        cc.UNIT_FILE.parent.mkdir(parents=True, exist_ok=True)
+        old = "/root/.claude/plugins/cache/ccdeck/ccdeck/0.4.0/ccdeck"
+        cc.UNIT_FILE.write_text(f"[Service]\nExecStart=/usr/bin/python3 {old} serve --port 7799\n")
+        try:
+            cc.adopt_stable_copy()
+            self.assertIn(f"ExecStart=/usr/bin/python3 {cc.STABLE_DIR / 'ccdeck'} serve --port 7799", cc.UNIT_FILE.read_text())
+            self.assertIn(("daemon-reload",), calls)
+            self.assertTrue((cc.STABLE_DIR / "ccdeck").exists())
+        finally:
+            cc.running_from_plugin, cc.service_installed, cc.systemctl = saved
+            cc.UNIT_FILE.unlink()
+
 
 class ServerTest(unittest.TestCase):
     @classmethod

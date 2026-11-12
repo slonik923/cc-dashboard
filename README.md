@@ -44,7 +44,9 @@ The plugin adds these commands to Claude Code:
 | `/ccdeck:done [note]` | Marks the current session done, with an optional note |
 | `/ccdeck:park [note]` | Sets the current session aside for later |
 
-`/ccdeck:install` copies ccdeck to `~/.local/share/ccdeck`, and the service and command run from that copy. When the plugin updates, the next session refreshes the copy and restarts the service. Nothing points at the plugin's versioned cache folder.
+`/ccdeck:install` copies ccdeck to `~/.local/share/ccdeck`, and the service and command run from that copy. Nothing points at the plugin's versioned cache folder.
+
+**Updates.** After a plugin update, the next session's hooks report the new version, and the running dashboard restarts itself on it within a few seconds; an open dashboard tab reloads too. The header and the footer show the version that is running. (Dashboards older than 0.4.3 can't do this yet: restart once with `/ccdeck:install`.)
 
 ### From a clone (always-on service, `ccdeck` command)
 
