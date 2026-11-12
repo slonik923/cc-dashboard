@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/slonik923/ccdeck/actions/workflows/ci.yml/badge.svg)](https://github.com/slonik923/ccdeck/actions/workflows/ci.yml)
 
-Keep track of your **local Claude Code sessions** on Ubuntu/Linux. It answers four questions:
+Keep track of your **local Claude Code sessions** on Linux and macOS. It answers four questions:
 
 - Which sessions are open?
 - Which ones need you, and for what?
@@ -33,7 +33,7 @@ That's all. When a session starts, the plugin's hooks:
 
 Open it at `http://localhost:7799`, or with `/ccdeck:dashboard`.
 
-For PR states, also run `sudo apt install gh` and then `gh auth login`.
+For PR states, also install the GitHub CLI (`sudo apt install gh` on Ubuntu, `brew install gh` on macOS) and run `gh auth login`.
 
 The plugin adds these commands to Claude Code:
 
@@ -45,7 +45,7 @@ The plugin adds these commands to Claude Code:
 
 ### From a clone (always-on service, `ccdeck` command)
 
-To get the `ccdeck` terminal command, have the dashboard running from login even before you open Claude Code, and get an app launcher entry:
+To get the `ccdeck` terminal command and have the dashboard running from login, even before you open Claude Code:
 
 ```bash
 git clone https://github.com/slonik923/ccdeck.git ~/ccdeck
@@ -56,8 +56,10 @@ git clone https://github.com/slonik923/ccdeck.git ~/ccdeck
 
 1. **Command.** It links `~/.local/bin/ccdeck` to the script in the clone, so `git pull` updates it.
 2. **Hooks.** It adds the same hooks to `~/.claude/settings.json`, after saving a backup as `settings.json.bak-ccdeck`. Skip this with `--no-hooks` when you use the plugin. Having both is harmless: a duplicate event is ignored.
-3. **Background service.** It adds a systemd user service, `ccdeck.service`. The service starts at login, restarts if it crashes, keeps PR states up to date and sends the notifications.
-4. **App launcher.** It adds a **ccdeck** entry that opens the dashboard.
+3. **Background service.** On Linux it adds a systemd user service, `ccdeck.service`. On macOS it adds a launchd agent, `~/Library/LaunchAgents/io.github.slonik923.ccdeck.plist`. The service starts at login, restarts if it crashes, keeps PR states up to date and sends the notifications.
+4. **App launcher** (Linux only). It adds a **ccdeck** entry that opens the dashboard. On macOS, run `ccdeck open` or bookmark the page.
+
+On macOS, `~/.local/bin` may not be on your `PATH`. `install` tells you if it isn't.
 
 Options: `--port 8123`, `--no-hooks`, `--no-service`. To remove everything: `ccdeck uninstall`. Your marks and notes stay in `~/.claude/ccdeck/`.
 
@@ -110,7 +112,11 @@ Each card has these buttons:
 
 Keyboard: `/` jumps to the filter box, `j` / `k` move between sessions, `Enter` opens the details, `r` resumes, `.` opens the actions menu (then `C` `O` `R` `P` `N` `D`), and `Esc` closes whatever is open.
 
-The terminal used for **Resume ▸** is the first one found from GNOME Terminal, Ptyxis, Console, Konsole, xfce4-terminal, Tilix, kitty, Alacritty and xterm. To choose a different one, set `CCDECK_TERMINAL`, for example `CCDECK_TERMINAL="wezterm start --"`.
+The terminal used for **Resume ▸**:
+- **On macOS:** iTerm if it's installed, otherwise Terminal. Set `CCDECK_TERMINAL=terminal` or `iterm` to choose.
+- **On Linux:** the first one found from GNOME Terminal, Ptyxis, Console, Konsole, xfce4-terminal, Tilix, kitty, Alacritty and xterm.
+
+Any other terminal works through `CCDECK_TERMINAL`, for example `CCDECK_TERMINAL="wezterm start --"`. macOS asks once whether ccdeck may control Terminal or iTerm.
 
 ## Terminal
 
@@ -135,8 +141,9 @@ ccdeck serve           run the dashboard in the foreground (instead of the servi
 - **PR states.** `gh pr view` is called for PRs in sessions that aren't done. Open PRs are re-checked every 3 minutes, and every minute while CI is running.
 - **The server** listens only on `127.0.0.1`. The API needs a random token, stored in `~/.claude/ccdeck/token`, which only the dashboard page receives. Requests whose `Host` header isn't localhost are rejected. Together, these stop other websites from reading your sessions or opening terminals.
 - **Token usage** comes from the `usage` that Claude Code saves with each response. Each response is counted once, even though it's saved on several entries. The context bar uses the size of the latest request against the model's window: 1M for current models, 200K for Claude Haiku 4.5 and older models. To use a different limit, set `CCDECK_CONTEXT_LIMIT`. Tokens are shown rather than dollars, because many people use Claude Code on a subscription and prices differ by model.
-- **Dashboard autostart.** With the plugin, the `SessionStart` hook starts `ccdeck serve` in the background when nothing answers on the port; it logs to `~/.claude/ccdeck/serve.log`. It doesn't do this when the systemd service is installed. To turn it off, set `CCDECK_AUTOSTART=0`.
-- **Notifications** use `notify-send` when a session moves into *Needs you*, *PRs to look at* or *Finished*. To turn them off, set `CCDECK_NOTIFY=0`, for example with `systemctl --user edit ccdeck`.
+- **Dashboard autostart.** With the plugin, the `SessionStart` hook starts `ccdeck serve` in the background when nothing answers on the port; it logs to `~/.claude/ccdeck/serve.log`. It doesn't do this when the systemd service or launchd agent is installed. To turn it off, set `CCDECK_AUTOSTART=0`.
+- **Notifications** appear when a session moves into *Needs you*, *PRs to look at* or *Finished*. They use `notify-send` on Linux and Notification Center (through `osascript`) on macOS. To turn them off, set `CCDECK_NOTIFY=0`.
+- **Processes.** On Linux, ccdeck reads `/proc`. On macOS it takes one `ps` snapshot per refresh and uses `lsof` for working folders. A process's start time is compared too, so a reused pid isn't mistaken for a live session.
 
 ## Limits
 

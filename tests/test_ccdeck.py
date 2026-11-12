@@ -460,6 +460,54 @@ class ServerTest(unittest.TestCase):
         self.req("/api/action", data={"id": "s-closed", "action": "note", "text": ""})
 
 
+class PsProcessTest(unittest.TestCase):
+    """The macOS code path (no /proc): process facts from one cached `ps` snapshot."""
+
+    def setUp(self):
+        self.saved = cc.USE_PROC
+        cc.USE_PROC = False
+        cc._ps_cache["t"] = 0.0
+
+    def tearDown(self):
+        cc.USE_PROC = self.saved
+        cc._ps_cache["t"] = 0.0
+
+    def test_parse_ps(self):
+        rows = cc.parse_ps("  101     1 Thu Nov 12 17:31:28 2026 /Users/me/.local/bin/claude --resume x\n"
+                           "  202   101 Thu Nov 12 17:31:29 2026 /bin/sh -c ccdeck hook\nnoise\n")
+        self.assertEqual(rows[101], (1, "Thu Nov 12 17:31:28 2026", "/Users/me/.local/bin/claude --resume x"))
+        self.assertEqual(rows[202][0], 101)
+        self.assertEqual(len(rows), 2)
+
+    @unittest.skipUnless(shutil.which("ps"), "needs ps")
+    def test_liveness_from_ps(self):
+        start = cc.proc_start_time(os.getpid())
+        self.assertTrue(start)
+        self.assertTrue(cc.pid_alive(os.getpid(), start))
+        self.assertFalse(cc.pid_alive(os.getpid(), "Mon Jan  1 00:00:00 2001"))
+        self.assertEqual(cc.proc_ppid(os.getpid()), os.getppid())
+        self.assertTrue(cc.proc_cmdline(os.getpid()))
+        self.assertIsInstance(cc.running_claude_processes(), list)
+
+    def test_claude_detection(self):
+        self.assertTrue(cc.is_claude_cmd(["/Users/me/.local/share/claude/versions/2.1.321", "--resume"]))
+        self.assertTrue(cc.is_claude_cmd(["claude"]))
+        self.assertFalse(cc.is_claude_cmd(["/bin/zsh"]))
+
+
+class MacDesktopTest(unittest.TestCase):
+    def test_terminal_and_iterm_scripts(self):
+        t = cc.mac_terminal_command("/Users/me/my \"dir\"", ["claude", "--resume", "abc"], "terminal")
+        self.assertEqual(t[0], "osascript")
+        self.assertIn('do script "cd \'/Users/me/my \\"dir\\"\' && claude --resume abc"', t[2])
+        i = cc.mac_terminal_command("/tmp", ["claude"], "iterm")
+        self.assertIn('tell application "iTerm"', i)
+        self.assertTrue(any("write text" in x for x in i))
+
+    def test_applescript_escaping(self):
+        self.assertEqual(cc.applescript_str('a "b" \\ c\nd'), '"a \\"b\\" \\\\ c d"')
+
+
 class TerminalTest(unittest.TestCase):
     def test_command_is_quoted(self):
         os.environ["CCDECK_TERMINAL"] = "gh --"  # any binary on PATH works for building the command

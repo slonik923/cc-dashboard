@@ -396,7 +396,7 @@ function renderHint() {
   const steps = [
     { done: true, b: "ccdeck server", s: "Running on localhost:" + data.port },
     data.gh ? { done: true, b: "PR states", s: "GitHub CLI found" }
-            : { done: false, b: "PR states", s: "Install the GitHub CLI, then run gh auth login", code: "sudo apt install gh" },
+            : { done: false, b: "PR states", s: "Install the GitHub CLI, then run gh auth login", code: data.gh_install || "sudo apt install gh" },
     data.hooks ? { done: true, b: "Exact live states", s: "Session hooks are reporting" }
                : { done: false, b: "Exact live states", s: "Install the ccdeck plugin in Claude Code", code: "/plugin install ccdeck --marketplace slonik923/ccdeck" },
   ];
