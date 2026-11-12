@@ -159,7 +159,7 @@ python3 -m unittest discover -s tests -v
 
 The tests run against a throwaway `HOME` with synthetic transcripts and a fake `gh`.
 
-**Releasing.** Claude Code updates an installed plugin only when the `version` in `.claude-plugin/plugin.json` changes. Bump it, and `VERSION` in `ccdeck` with it, in every release; CI checks that the two match. Users then get the update with `/plugin marketplace update ccdeck`, followed by `/plugin update ccdeck@ccdeck`.
+**Releasing.** Claude Code updates an installed plugin only when the `version` in `.claude-plugin/plugin.json` changes. Bump it, and `VERSION` in `ccdeck` with it, in every release; CI checks that the two match. Users then get it by running `/plugin marketplace update ccdeck` and updating ccdeck from the `/plugin` menu (or reinstalling it).
 
 ## License and affiliation
 
