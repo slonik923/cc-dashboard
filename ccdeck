@@ -51,15 +51,19 @@ PR_CACHE_FILE = DATA_DIR / "prs.json"
 LAST_LIST_FILE = DATA_DIR / "last-list.json"
 TOKEN_FILE = DATA_DIR / "token"
 DAEMON_FILE = DATA_DIR / "daemon.json"
+CONFIG_FILE = DATA_DIR / "config.json"
+REQ_DIR = DATA_DIR / "requests"
 SCRIPT = Path(__file__).resolve()
 WEB_DIR = SCRIPT.parent / "web"
 UNIT_FILE = HOME / ".config" / "systemd" / "user" / "ccdeck.service"
 DESKTOP_FILE = HOME / ".local" / "share" / "applications" / "ccdeck.desktop"
 DEFAULT_PORT = int(os.environ.get("CCDECK_PORT", "7799"))
-CACHE_VERSION = 5
+CACHE_VERSION = 6
 DEFAULT_DAYS = 14
 QUIET_AFTER = 15 * 60  # "working" with no activity for this long => probably interrupted
-HOOK_EVENTS = ["SessionStart", "UserPromptSubmit", "PostToolUse", "Notification", "Stop", "SessionEnd"]
+HOOK_EVENTS = ["SessionStart", "UserPromptSubmit", "PostToolUse", "PostToolUseFailure", "Notification",
+               "PermissionRequest", "PermissionDenied", "Stop", "SessionEnd"]
+HOOK_TIMEOUTS = {"PermissionRequest": 1800}  # seconds; the hook may wait this long for the dashboard
 
 # ------------------------------------------------------------------ states
 # key: (group, label). Groups are shown in this order.
@@ -374,15 +378,36 @@ def asks_decision(text):
     return last_para.rstrip().endswith("?") or bool(DECISION_RE.search(last_para))
 
 
+def summarize_tool_input(name, inp):
+    """A short, human-readable form of what a tool call wants to do (shown while it waits)."""
+    try:
+        if name == "Bash":
+            return str(inp.get("command") or "")[:400] or None
+        if name in WRITE_TOOLS or name == "Read":
+            return str(inp.get("file_path") or inp.get("notebook_path") or "")[:400] or None
+        if name in ("WebFetch", "WebSearch"):
+            return str(inp.get("url") or inp.get("query") or "")[:400] or None
+        if name == "AskUserQuestion":
+            qs = inp.get("questions") or []
+            if qs and isinstance(qs[0], dict):
+                return str(qs[0].get("question") or "")[:600] or None
+            return None
+        if name == "ExitPlanMode":
+            return str(inp.get("plan") or "")[:2000] or None
+        return json.dumps(inp, ensure_ascii=False)[:400] if inp else None
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
 def parse_transcript(path):
     info = {
         "id": path.stem, "cwd": None, "branch": None, "title": None, "ai_title": None,
         "summary": None, "first_prompt": None, "last_prompt": None, "prompts": 0,
         "first_ts": 0.0, "last_ts": 0.0, "last_role": None, "last_text": "",
-        "api_error": False, "pending_tool": None, "prs": [], "links": {}, "files": [],
+        "api_error": False, "pending_tool": None, "pending_input": None, "prs": [], "links": {}, "files": [],
         "usage": empty_usage(), "context": 0, "model": None,
     }
-    prs, files, links, tool_names, pending = {}, {}, {}, {}, {}
+    prs, files, links, tool_names, pending, pending_inputs = {}, {}, {}, {}, {}, {}
     seen_msgs = set()
 
     def add_links(text):
@@ -465,6 +490,7 @@ def parse_transcript(path):
                     inp = b.get("input") if isinstance(b.get("input"), dict) else {}
                     tool_names[b.get("id")] = name
                     pending[b.get("id")] = name
+                    pending_inputs[b.get("id")] = summarize_tool_input(name, inp)
                     info["last_role"] = "tool"
                     if name in WRITE_TOOLS:
                         fp = inp.get("file_path") or inp.get("notebook_path")
@@ -475,6 +501,7 @@ def parse_transcript(path):
                         if "gh pr create" in cmd or "git push" in cmd:
                             tool_names[b.get("id")] = "Bash:create"
     info["pending_tool"] = list(pending.values())[-1] if pending else None
+    info["pending_input"] = pending_inputs.get(list(pending)[-1]) if pending else None
     info["prs"] = list(prs)
     info["links"] = {k: list(v) for k, v in links.items()}
     info["files"] = list(files)
@@ -878,7 +905,7 @@ def open_path(target):
 
 def session_json(s):
     keep = ("id", "display_title", "title", "cwd", "branch", "first_ts", "last_ts", "prompts",
-            "last_role", "pending_tool", "links", "files", "alive", "live_source",
+            "last_role", "pending_tool", "pending_input", "links", "files", "alive", "live_source",
             "mark", "pr_details", "state", "group", "label", "hook_message")
     d = {k: s.get(k) for k in keep}
     d["last_text"] = (s.get("last_text") or "")[-4000:]
@@ -927,7 +954,7 @@ class Dashboard:
             "groups": [{"key": g, "label": l} for g, l in GROUPS],
             "states": {k: {"group": g, "label": l} for k, (g, l) in STATES.items()},
             "gh": bool(shutil.which("gh")), "hooks": hooks_active(),
-            "default_days": DEFAULT_DAYS,
+            "default_days": DEFAULT_DAYS, "port": self.port,
         }
         etag = hashlib.sha1(json.dumps(snap, sort_keys=True).encode()).hexdigest()[:16]
         snap["generated"] = time.time()
@@ -1053,8 +1080,14 @@ class Dashboard:
                     return self._send(200, html.encode(), "text/html; charset=utf-8", {
                         "Content-Security-Policy":
                             "default-src 'self'; script-src 'unsafe-inline'; "
-                            "style-src 'unsafe-inline'; img-src 'self' data:; "
+                            "style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
                             "connect-src 'self'; frame-ancestors 'none'"})
+                if path == "/ccdeck.css":
+                    try:
+                        css = (WEB_DIR / "ccdeck.css").read_bytes()
+                    except OSError:
+                        return self._send(404, {"error": "not found"})
+                    return self._send(200, css, "text/css; charset=utf-8")
                 if path == "/api/sessions":
                     if self.headers.get("X-CC-Token") != dash.token:
                         return self._send(403, {"error": "bad token"})
@@ -1296,7 +1329,8 @@ def cmd_hook(_args):
     path = STATE_DIR / f"{sid}.json"
     state = load_json(path, {})
     prev = state.get("status")
-    if (event == state.get("event") and event != "PostToolUse"
+    if (event == state.get("event")
+            and event not in ("PostToolUse", "PostToolUseFailure", "PermissionRequest")
             and time.time() - (state.get("ts") or 0) < 1.0):
         return  # same event twice (hooks installed both as a plugin and in settings.json)
     state.update(session_id=sid, event=event, ts=time.time(),
@@ -1311,9 +1345,14 @@ def cmd_hook(_args):
         autostart_daemon()
     elif event == "Stop":
         state["status"] = "stopped"
-    elif event in ("UserPromptSubmit", "PostToolUse"):
+    elif event in ("UserPromptSubmit", "PostToolUse", "PostToolUseFailure"):
         state["status"] = "working"
         state.pop("message", None)
+    elif event == "PermissionRequest":
+        state["status"] = "permission"
+        state["message"] = f"Claude wants to use {data.get('tool_name') or 'a tool'}"
+    elif event == "PermissionDenied":
+        state["status"] = "working"
     elif event == "SessionEnd":
         state["status"] = "ended"
         state["end_reason"] = data.get("reason")
@@ -1332,6 +1371,185 @@ def cmd_hook(_args):
                 and not daemon_running()):
             notify(f"Claude needs you · {short_path(state.get('cwd'))}", msg or ntype, urgent=True)
     save_json(path, state)
+    close_requests(sid, event, data)
+    if event == "PermissionRequest":
+        decision = wait_for_approval(sid, data, state)
+        if decision:
+            print(json.dumps({"hookSpecificOutput": {"hookEventName": "PermissionRequest",
+                                                     "decision": decision}}))
+
+
+# ---------------------------------------------------------------- approvals
+# A PermissionRequest hook and the terminal dialog answer the same prompt in parallel: the
+# dialog shows at once, the first answer wins (measured on Claude Code 2.1.321, see
+# docs/plans/2026-11-09-dashboard-approvals.md). So the hook may wait for the dashboard
+# without delaying the terminal; any failure here prints nothing and leaves it to the terminal.
+
+APPROVAL_POLL = 0.3
+
+
+def approvals_enabled():
+    env = os.environ.get("CCDECK_APPROVALS")
+    if env is not None:
+        return env == "1"
+    return bool(load_json(CONFIG_FILE, {}).get("approvals"))
+
+
+def input_hash(tool_name, tool_input):
+    blob = json.dumps([tool_name, tool_input], sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(blob.encode()).hexdigest()
+
+
+def claude_is_headless():
+    pid = find_claude_ancestor()
+    argv = proc_cmdline(pid) if pid else []
+    return any(a in ("-p", "--print") for a in argv[1:])
+
+
+def ensure_req_dir():
+    REQ_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(DATA_DIR, 0o700)
+        os.chmod(REQ_DIR, 0o700)
+    except OSError:
+        pass
+
+
+def write_private(path, data):
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        json.dump(data, f)
+    os.replace(tmp, path)
+
+
+def open_requests(sid=None):
+    out = []
+    if not REQ_DIR.is_dir():
+        return out
+    for p in REQ_DIR.glob("*.json"):
+        if p.name.endswith(".answer.json"):
+            continue
+        r = load_json(p, None)
+        if not isinstance(r, dict) or not r.get("id"):
+            continue
+        if (REQ_DIR / f"{r['id']}.over").exists():
+            continue
+        if sid is None or r.get("session_id") == sid:
+            out.append(r)
+    out.sort(key=lambda r: r.get("created", 0))
+    return out
+
+
+def mark_over(req_id, why):
+    try:
+        (REQ_DIR / f"{req_id}.over").write_text(why)
+    except OSError:
+        pass
+
+
+def close_requests(sid, event, data):
+    """Other hook events of the session tell us a pending prompt was answered elsewhere."""
+    if event in ("PermissionRequest", "Notification", "SessionStart"):
+        return
+    reqs = open_requests(sid)
+    if not reqs:
+        return
+    if event in ("PostToolUse", "PostToolUseFailure"):
+        tool = data.get("tool_name")
+        h = input_hash(tool, data.get("tool_input"))
+        exact = [r for r in reqs if r.get("input_hash") == h]
+        # Fallback when the tool input was normalised: the oldest request for that tool.
+        hits = exact or [r for r in reqs if r.get("tool_name") == tool][:1]
+        for r in hits:
+            mark_over(r["id"], f"{event} (answered in the terminal or by a rule)")
+    else:  # UserPromptSubmit, Stop, SessionEnd, PermissionDenied
+        for r in reqs:
+            mark_over(r["id"], event)
+
+
+def cleanup_request(req_id):
+    for suffix in (".json", ".answer.json", ".over"):
+        try:
+            (REQ_DIR / f"{req_id}{suffix}").unlink()
+        except OSError:
+            pass
+
+
+def valid_decision(answer, req):
+    if not isinstance(answer, dict) or answer.get("id") != req["id"]:
+        return None
+    if answer.get("input_hash") != req["input_hash"]:
+        return None
+    d = answer.get("decision")
+    if not isinstance(d, dict):
+        return None
+    if d.get("behavior") == "allow":
+        return {"behavior": "allow"}
+    if d.get("behavior") == "deny":
+        out = {"behavior": "deny"}
+        if isinstance(d.get("message"), str) and d["message"].strip():
+            out["message"] = d["message"].strip()[:2000]
+        if d.get("interrupt") is True:
+            out["interrupt"] = True
+        return out
+    return None
+
+
+def wait_for_approval(sid, data, state):
+    """Publish the request and wait for the dashboard's answer. Returns a decision or None."""
+    try:
+        if not approvals_enabled() or not daemon_running() or claude_is_headless():
+            return None
+        tool = str(data.get("tool_name") or "")
+        h = input_hash(tool, data.get("tool_input"))
+        if any(r.get("input_hash") == h and time.time() - r.get("created", 0) < 2
+               for r in open_requests(sid)):
+            return None  # the same prompt from a second copy of the hooks
+        ensure_req_dir()
+        req = {
+            "id": secrets.token_hex(8), "session_id": sid, "cwd": data.get("cwd"),
+            "tool_name": tool, "tool_input": data.get("tool_input"),
+            "permission_suggestions": data.get("permission_suggestions"),
+            "permission_mode": data.get("permission_mode"),
+            "mcp_server": data.get("mcp_server"), "input_hash": h,
+            "created": time.time(), "pid": os.getpid(),
+        }
+        write_private(REQ_DIR / f"{req['id']}.json", req)
+    except Exception:
+        return None
+    wait = float(os.environ.get("CCDECK_APPROVAL_WAIT", HOOK_TIMEOUTS["PermissionRequest"] - 60))
+    deadline = time.time() + wait
+    last_daemon_ok = time.time()
+    try:
+        while time.time() < deadline:
+            answer = load_json(REQ_DIR / f"{req['id']}.answer.json", None)
+            if answer is not None:
+                return valid_decision(answer, req)
+            if (REQ_DIR / f"{req['id']}.over").exists():
+                return None
+            if daemon_running():
+                last_daemon_ok = time.time()
+            elif time.time() - last_daemon_ok > 30:
+                return None
+            time.sleep(APPROVAL_POLL)
+        return None
+    except Exception:
+        return None
+    finally:
+        cleanup_request(req["id"])
+
+
+def cmd_approvals(args):
+    if args.mode in ("on", "off"):
+        cfg = load_json(CONFIG_FILE, {})
+        cfg["approvals"] = args.mode == "on"
+        save_json(CONFIG_FILE, cfg)
+    on = approvals_enabled()
+    print(f"Approvals from the dashboard: {'on' if on else 'off'}"
+          + (" (CCDECK_APPROVALS overrides the setting)" if "CCDECK_APPROVALS" in os.environ else ""))
+    if on:
+        print("Permission prompts can now be allowed or denied in the dashboard; the terminal still works too.")
 
 
 def autostart_daemon():
@@ -1491,8 +1709,9 @@ def cmd_install(args):
         strip_our_hooks(settings)
         hooks = settings.setdefault("hooks", {})
         for ev in HOOK_EVENTS:
-            entry = {"hooks": [{"type": "command", "command": hook_command(), "timeout": 5}]}
-            if ev in ("PostToolUse", "Notification"):
+            entry = {"hooks": [{"type": "command", "command": hook_command(),
+                                "timeout": HOOK_TIMEOUTS.get(ev, 5)}]}
+            if ev in ("PostToolUse", "PostToolUseFailure", "Notification", "PermissionRequest"):
                 entry["matcher"] = ""
             hooks.setdefault(ev, []).append(entry)
         save_json(SETTINGS_FILE, settings)
@@ -1556,6 +1775,8 @@ def main():
     s.add_argument("--no-hooks", action="store_true")
     s.add_argument("--no-service", action="store_true")
     sub.add_parser("uninstall", help="remove hooks, service and launcher")
+    s = sub.add_parser("approvals", help="allow/deny permission prompts from the dashboard (opt-in)")
+    s.add_argument("mode", nargs="?", choices=["on", "off", "status"], default="status")
     sub.add_parser("hook", help=argparse.SUPPRESS)
     args = p.parse_args()
 
@@ -1563,7 +1784,7 @@ def main():
         None: cmd_list, "list": cmd_list, "show": cmd_show, "resume": cmd_resume,
         "done": cmd_mark("done"), "undone": cmd_mark("undone"), "park": cmd_mark("park"),
         "unpark": cmd_mark("unpark"), "note": cmd_mark("note"), "serve": cmd_serve,
-        "open": cmd_open, "install": cmd_install, "uninstall": cmd_uninstall, "hook": cmd_hook,
+        "open": cmd_open, "install": cmd_install, "approvals": cmd_approvals, "uninstall": cmd_uninstall, "hook": cmd_hook,
     }
     handlers[args.cmd](args)
 
