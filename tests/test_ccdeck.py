@@ -262,6 +262,119 @@ class HookTest(unittest.TestCase):
         self.assertFalse((cc.DATA_DIR / "etc.json").exists())
 
 
+class ApprovalHookTest(unittest.TestCase):
+    """The PermissionRequest hook, run as Claude Code runs it: a subprocess reading JSON on stdin."""
+
+    SID = "s-approve"
+
+    def setUp(self):
+        import subprocess
+        self.subprocess = subprocess
+        shutil.rmtree(cc.REQ_DIR, ignore_errors=True)
+        cc.save_json(cc.DAEMON_FILE, {"pid": os.getpid(), "port": 0, "ts": time.time()})
+        self.env = dict(os.environ, CCDECK_APPROVALS="1", CCDECK_APPROVAL_WAIT="15", CCDECK_AUTOSTART="0")
+
+    def tearDown(self):
+        for p in getattr(self, "procs", []):
+            if p.poll() is None:
+                p.kill()
+        try:
+            cc.DAEMON_FILE.unlink()
+        except OSError:
+            pass
+
+    def hook(self, payload, env=None):
+        p = self.subprocess.Popen([sys.executable, str(ROOT / "ccdeck"), "hook"], env=env or self.env,
+                                  stdin=self.subprocess.PIPE, stdout=self.subprocess.PIPE, text=True)
+        self.procs = getattr(self, "procs", []) + [p]
+        p.stdin.write(json.dumps(payload))
+        p.stdin.close()
+        return p
+
+    def ask(self, command="npm run deploy", **kw):
+        return self.hook(dict({"session_id": self.SID, "hook_event_name": "PermissionRequest",
+                               "cwd": str(WORK), "tool_name": "Bash",
+                               "tool_input": {"command": command}}, **kw))
+
+    def wait_request(self):
+        for _ in range(100):
+            reqs = cc.open_requests(self.SID)
+            if reqs:
+                return reqs[0]
+            time.sleep(0.05)
+        self.fail("no request file appeared")
+
+    def answer(self, req, decision, h=None):
+        cc.write_private(cc.REQ_DIR / f"{req['id']}.answer.json",
+                         {"id": req["id"], "input_hash": h or req["input_hash"], "decision": decision})
+
+    def finish(self, p, timeout=5):
+        out = p.stdout.read()
+        p.stdout.close()
+        p.wait(timeout=timeout)
+        return out.strip()
+
+    def test_allow_from_dashboard(self):
+        p = self.ask()
+        req = self.wait_request()
+        self.assertEqual((req["tool_name"], req["tool_input"]), ("Bash", {"command": "npm run deploy"}))
+        self.assertEqual(oct(os.stat(cc.REQ_DIR / f"{req['id']}.json").st_mode & 0o777), "0o600")
+        self.answer(req, {"behavior": "allow", "updatedInput": {"command": "rm -rf /"}})
+        out = json.loads(self.finish(p))
+        # Only behavior is passed on: the dashboard can't rewrite the command.
+        self.assertEqual(out, {"hookSpecificOutput": {"hookEventName": "PermissionRequest",
+                                                      "decision": {"behavior": "allow"}}})
+        self.assertEqual(list(cc.REQ_DIR.iterdir()), [])
+
+    def test_deny_with_message(self):
+        p = self.ask()
+        req = self.wait_request()
+        self.answer(req, {"behavior": "deny", "message": "not on a Friday"})
+        out = json.loads(self.finish(p))
+        self.assertEqual(out["hookSpecificOutput"]["decision"], {"behavior": "deny", "message": "not on a Friday"})
+
+    def test_answer_for_other_input_is_ignored(self):
+        p = self.ask()
+        req = self.wait_request()
+        self.answer(req, {"behavior": "allow"}, h="0" * 64)
+        self.assertEqual(self.finish(p), "")
+
+    def test_answered_in_terminal_closes_request(self):
+        p = self.ask()
+        self.wait_request()
+        done = self.hook({"session_id": self.SID, "hook_event_name": "PostToolUse", "tool_name": "Bash",
+                          "tool_input": {"command": "npm run deploy"}, "tool_response": {}})
+        self.finish(done)
+        t = time.time()
+        self.assertEqual(self.finish(p), "")
+        self.assertLess(time.time() - t, 3)
+
+    def test_denied_in_terminal_closes_on_next_prompt(self):
+        p = self.ask()
+        self.wait_request()
+        self.finish(self.hook({"session_id": self.SID, "hook_event_name": "UserPromptSubmit", "prompt": "no"}))
+        self.assertEqual(self.finish(p), "")
+
+    def test_off_by_default_and_without_daemon(self):
+        env = dict(self.env)
+        del env["CCDECK_APPROVALS"]
+        t = time.time()
+        self.assertEqual(self.finish(self.hook({"session_id": self.SID, "hook_event_name": "PermissionRequest",
+                                                "tool_name": "Bash", "tool_input": {"command": "ls"}}, env=env)), "")
+        cc.DAEMON_FILE.unlink()
+        self.assertEqual(self.finish(self.ask()), "")
+        self.assertLess(time.time() - t, 3)
+        self.assertEqual(cc.open_requests(self.SID), [])
+
+    def test_valid_decision(self):
+        req = {"id": "a", "input_hash": "h"}
+        ok = lambda d: cc.valid_decision({"id": "a", "input_hash": "h", "decision": d}, req)
+        self.assertIsNone(ok({"behavior": "ask"}))
+        self.assertIsNone(ok("allow"))
+        self.assertEqual(ok({"behavior": "deny", "interrupt": True}), {"behavior": "deny", "interrupt": True})
+        self.assertIsNone(cc.valid_decision({"id": "b", "input_hash": "h", "decision": {"behavior": "allow"}}, req))
+
+
 class InstallTest(unittest.TestCase):
     def setUp(self):
         cc.SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -323,6 +436,12 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(code, 200)
         self.assertIn(self.dash.token.encode(), body)
 
+    def test_stylesheet_served(self):
+        code, body = self.req("/ccdeck.css", token=False)
+        self.assertEqual(code, 200)
+        self.assertIn(b'data-theme="alpine-gm3a"', body)
+        self.assertEqual(self.req("/../ccdeck", token=False)[0], 404)
+
     def test_api_requires_token_and_host(self):
         self.assertEqual(self.req("/api/sessions", token=False)[0], 403)
         self.assertEqual(self.req("/api/sessions", host="evil.example:80")[0], 403)
@@ -339,6 +458,54 @@ class ServerTest(unittest.TestCase):
         snap = json.loads(self.req("/api/sessions")[1])
         self.assertEqual({s["id"]: s for s in snap["sessions"]}["s-closed"]["mark"]["note"], "QA")
         self.req("/api/action", data={"id": "s-closed", "action": "note", "text": ""})
+
+
+class PsProcessTest(unittest.TestCase):
+    """The macOS code path (no /proc): process facts from one cached `ps` snapshot."""
+
+    def setUp(self):
+        self.saved = cc.USE_PROC
+        cc.USE_PROC = False
+        cc._ps_cache["t"] = 0.0
+
+    def tearDown(self):
+        cc.USE_PROC = self.saved
+        cc._ps_cache["t"] = 0.0
+
+    def test_parse_ps(self):
+        rows = cc.parse_ps("  101     1 Thu Nov 12 17:31:28 2026 /Users/me/.local/bin/claude --resume x\n"
+                           "  202   101 Thu Nov 12 17:31:29 2026 /bin/sh -c ccdeck hook\nnoise\n")
+        self.assertEqual(rows[101], (1, "Thu Nov 12 17:31:28 2026", "/Users/me/.local/bin/claude --resume x"))
+        self.assertEqual(rows[202][0], 101)
+        self.assertEqual(len(rows), 2)
+
+    @unittest.skipUnless(shutil.which("ps"), "needs ps")
+    def test_liveness_from_ps(self):
+        start = cc.proc_start_time(os.getpid())
+        self.assertTrue(start)
+        self.assertTrue(cc.pid_alive(os.getpid(), start))
+        self.assertFalse(cc.pid_alive(os.getpid(), "Mon Jan  1 00:00:00 2001"))
+        self.assertEqual(cc.proc_ppid(os.getpid()), os.getppid())
+        self.assertTrue(cc.proc_cmdline(os.getpid()))
+        self.assertIsInstance(cc.running_claude_processes(), list)
+
+    def test_claude_detection(self):
+        self.assertTrue(cc.is_claude_cmd(["/Users/me/.local/share/claude/versions/2.1.321", "--resume"]))
+        self.assertTrue(cc.is_claude_cmd(["claude"]))
+        self.assertFalse(cc.is_claude_cmd(["/bin/zsh"]))
+
+
+class MacDesktopTest(unittest.TestCase):
+    def test_terminal_and_iterm_scripts(self):
+        t = cc.mac_terminal_command("/Users/me/my \"dir\"", ["claude", "--resume", "abc"], "terminal")
+        self.assertEqual(t[0], "osascript")
+        self.assertIn('do script "cd \'/Users/me/my \\"dir\\"\' && claude --resume abc"', t[2])
+        i = cc.mac_terminal_command("/tmp", ["claude"], "iterm")
+        self.assertIn('tell application "iTerm"', i)
+        self.assertTrue(any("write text" in x for x in i))
+
+    def test_applescript_escaping(self):
+        self.assertEqual(cc.applescript_str('a "b" \\ c\nd'), '"a \\"b\\" \\\\ c d"')
 
 
 class TerminalTest(unittest.TestCase):

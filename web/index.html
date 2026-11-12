@@ -5,208 +5,135 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ccdeck</title>
 <link rel="icon" id="favicon" href="data:,">
-<style>
-:root {
-  --bg: #f6f6f4; --panel: #ffffff; --text: #1c1c1a; --muted: #6b6a66; --line: #e3e2de;
-  --chip: #efeeea; --focus: #2f6feb; --shadow: 0 1px 2px rgba(0,0,0,.05), 0 1px 1px rgba(0,0,0,.03);
-  --st-permission: #d93036; --st-question: #e2620c; --st-plan: #c97a00; --st-decision: #c2298a;
-  --st-error: #9f1d24; --st-ci_failing: #d93036; --st-changes_requested: #c4410c;
-  --st-pr_conflict: #a35d00; --st-pr_review: #7c4dcc; --st-working: #c98a00; --st-ci_pending: #1f6fd1;
-  --st-parked: #6f7480; --st-idle: #23864a; --st-quiet: #8a7f6d; --st-closed_midtask: #8d6a46;
-  --st-closed: #85857f; --st-pr_merged: #6e4fc4; --st-done: #4f8a5e;
-  --g-needs: #d93036; --g-review: #7c4dcc; --g-working: #c98a00; --g-waiting: #1f6fd1;
-  --g-yours: #23864a; --g-closed: #85857f; --g-done: #4f8a5e;
-}
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    --bg: #141413; --panel: #1d1d1b; --text: #ecebe6; --muted: #9c9a93; --line: #2f2e2b;
-    --chip: #2a2926; --focus: #6aa0ff; --shadow: none;
-    --st-permission: #ff6b6f; --st-question: #ff9547; --st-plan: #f2b134; --st-decision: #ef6fbf;
-    --st-error: #ff5a62; --st-ci_failing: #ff6b6f; --st-changes_requested: #ff8a4c;
-    --st-pr_conflict: #e0a040; --st-pr_review: #b294ff; --st-working: #f2c14e; --st-ci_pending: #5ea7ff;
-    --st-parked: #9aa0ab; --st-idle: #4cc47b; --st-quiet: #b8ab95; --st-closed_midtask: #c49a72;
-    --st-closed: #8f8e88; --st-pr_merged: #a58cf5; --st-done: #6fbf86;
-    --g-needs: #ff6b6f; --g-review: #b294ff; --g-working: #f2c14e; --g-waiting: #5ea7ff;
-    --g-yours: #4cc47b; --g-closed: #8f8e88; --g-done: #6fbf86;
-  }
-}
-:root[data-theme="dark"] {
-  --bg: #141413; --panel: #1d1d1b; --text: #ecebe6; --muted: #9c9a93; --line: #2f2e2b;
-  --chip: #2a2926; --focus: #6aa0ff; --shadow: none;
-  --st-permission: #ff6b6f; --st-question: #ff9547; --st-plan: #f2b134; --st-decision: #ef6fbf;
-  --st-error: #ff5a62; --st-ci_failing: #ff6b6f; --st-changes_requested: #ff8a4c;
-  --st-pr_conflict: #e0a040; --st-pr_review: #b294ff; --st-working: #f2c14e; --st-ci_pending: #5ea7ff;
-  --st-parked: #9aa0ab; --st-idle: #4cc47b; --st-quiet: #b8ab95; --st-closed_midtask: #c49a72;
-  --st-closed: #8f8e88; --st-pr_merged: #a58cf5; --st-done: #6fbf86;
-  --g-needs: #ff6b6f; --g-review: #b294ff; --g-working: #f2c14e; --g-waiting: #5ea7ff;
-  --g-yours: #4cc47b; --g-closed: #8f8e88; --g-done: #6fbf86;
-}
-* { box-sizing: border-box; }
-html, body { margin: 0; }
-body {
-  background: var(--bg); color: var(--text);
-  font: 14px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Ubuntu, Cantarell, sans-serif;
-}
-a { color: inherit; }
-button { font: inherit; color: inherit; }
-:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
-
-header {
-  position: sticky; top: 0; z-index: 5; background: color-mix(in srgb, var(--bg) 92%, transparent);
-  backdrop-filter: blur(8px); border-bottom: 1px solid var(--line);
-}
-.bar { max-width: 1500px; margin: 0 auto; padding: 12px 20px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
-.sub { font-weight: 400; color: var(--muted); font-size: 13px; }
-h1 { font-size: 16px; margin: 0; font-weight: 650; letter-spacing: -.01em; display: flex; align-items: center; gap: 8px; }
-.pulse { width: 8px; height: 8px; border-radius: 50%; background: var(--g-yours); }
-.pulse.off { background: var(--st-permission); }
-.updated { color: var(--muted); font-size: 12px; }
-.spacer { flex: 1; }
-.search { min-width: 220px; flex: 0 1 300px; padding: 7px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); color: var(--text); font: inherit; }
-.toggle { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 13px; cursor: pointer; user-select: none; }
-.summary { max-width: 1500px; margin: 0 auto; padding: 0 20px 10px; display: flex; gap: 6px; flex-wrap: wrap; }
-.sum {
-  display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px;
-  background: var(--chip); border: 1px solid transparent; cursor: pointer; font-size: 13px;
-}
-.sum b { font-variant-numeric: tabular-nums; }
-.sum .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--gc); }
-.sum.zero { opacity: .45; }
-.sum.active { border-color: var(--gc); }
-
-main { max-width: 1500px; margin: 0 auto; padding: 8px 20px 60px; }
-.banner { margin: 12px 0 0; padding: 10px 12px; border-radius: 8px; background: var(--chip); color: var(--muted); font-size: 13px; }
-.banner code { background: var(--panel); padding: 1px 5px; border-radius: 4px; }
-.banner.err { color: var(--st-permission); }
-section { margin-top: 22px; }
-section > h2 {
-  font-size: 12px; text-transform: uppercase; letter-spacing: .07em; color: var(--muted);
-  margin: 0 0 10px; display: flex; align-items: center; gap: 8px; font-weight: 650;
-}
-section > h2 .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--gc); }
-.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 380px), 1fr)); gap: 12px; }
-
-.card {
-  background: var(--panel); border: 1px solid var(--line); border-left: 4px solid var(--c);
-  border-radius: 10px; padding: 12px 14px; box-shadow: var(--shadow); display: flex; flex-direction: column; gap: 7px; min-width: 0;
-}
-.card.dim { opacity: .72; }
-.top { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
-.pill {
-  display: inline-flex; align-items: center; gap: 6px; padding: 2px 9px; border-radius: 999px; font-weight: 600; font-size: 12px;
-  color: var(--c); background: color-mix(in srgb, var(--c) 13%, transparent);
-}
-.pill .d { width: 7px; height: 7px; border-radius: 50%; background: var(--c); }
-.pill.anim .d { animation: blink 1.2s ease-in-out infinite; }
-@keyframes blink { 50% { opacity: .25; } }
-@media (prefers-reduced-motion: reduce) { .pill.anim .d { animation: none; } }
-.live { display: inline-flex; align-items: center; gap: 4px; }
-.live i { width: 6px; height: 6px; border-radius: 50%; background: var(--g-yours); display: inline-block; }
-.live.no i { background: transparent; border: 1px solid var(--muted); }
-.age { margin-left: auto; white-space: nowrap; }
-.title { font-size: 15px; font-weight: 620; margin: 0; overflow-wrap: anywhere; }
-.meta { font-size: 12px; color: var(--muted); display: flex; flex-wrap: wrap; gap: 4px 10px; }
-.meta span { overflow-wrap: anywhere; }
-.mono { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 11.5px; }
-.usage { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
-.ctxbar { flex: 0 0 72px; height: 6px; border-radius: 3px; background: var(--chip); overflow: hidden; }
-.ctxbar i { display: block; height: 100%; background: var(--bc); border-radius: 3px; }
-.note { font-size: 13px; padding: 4px 8px; border-radius: 6px; background: var(--chip); }
-.msg {
-  font-size: 13px; color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; cursor: pointer;
-  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
-  border-radius: 6px; padding: 6px 8px; background: color-mix(in srgb, var(--chip) 60%, transparent);
-}
-.msg.open { display: block; max-height: 420px; overflow: auto; }
-.msg .who { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .05em; display: block; }
-.links { display: flex; flex-wrap: wrap; gap: 6px; }
-.chip {
-  display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px; border-radius: 6px; background: var(--chip);
-  font-size: 12px; text-decoration: none; border: 1px solid transparent; max-width: 100%;
-}
-.chip:hover { border-color: var(--line); }
-.chip.pr { border-color: color-mix(in srgb, var(--pc) 45%, transparent); }
-.chip.pr .s { color: var(--pc); font-weight: 600; }
-.files { font-size: 12px; color: var(--muted); }
-.files summary { cursor: pointer; }
-.files ul { margin: 4px 0 0; padding-left: 16px; }
-.actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 2px; }
-.btn {
-  padding: 4px 10px; border-radius: 7px; border: 1px solid var(--line); background: var(--panel); cursor: pointer; font-size: 12.5px;
-}
-.btn:hover { background: var(--chip); }
-.btn.primary { background: var(--text); color: var(--panel); border-color: var(--text); }
-.btn.primary:hover { opacity: .88; }
-.empty { color: var(--muted); padding: 40px 0; text-align: center; }
-.toast {
-  position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: var(--text); color: var(--panel);
-  padding: 8px 14px; border-radius: 8px; font-size: 13px; opacity: 0; transition: opacity .2s; pointer-events: none; max-width: calc(100% - 32px);
-}
-.toast.show { opacity: 1; }
-.legend { margin-top: 40px; font-size: 12px; color: var(--muted); }
-.legend summary { cursor: pointer; }
-.legend .grid { grid-template-columns: repeat(auto-fill, minmax(min(100%, 260px), 1fr)); gap: 6px 16px; margin-top: 10px; }
-@media (max-width: 600px) {
-  .bar, .summary, main { padding-left: 16px; padding-right: 16px; }
-  .search { flex: 1 1 100%; min-width: 0; order: 5; }
-}
-</style>
+<link rel="stylesheet" href="/ccdeck.css">
 </head>
 <body>
-<header>
-  <div class="bar">
-    <h1><span class="pulse" id="pulse"></span>ccdeck <span class="sub">Claude Code sessions</span></h1>
-    <span class="updated" id="updated"></span>
-    <span class="spacer"></span>
-    <input class="search" id="q" type="search" placeholder="Filter by title, project, branch, note…" autocomplete="off">
-    <label class="toggle"><input type="checkbox" id="old"> older closed</label>
-    <label class="toggle"><input type="checkbox" id="done"> done</label>
-  </div>
-  <div class="summary" id="summary"></div>
+<div class="ccd" id="app" data-theme="alpine-gm3a" style="min-height: 100vh">
+<svg width="0" height="0" style="position: absolute" aria-hidden="true" focusable="false">
+<defs>
+<symbol id="i-chevron" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"></path></symbol>
+<symbol id="i-peak" viewBox="0 0 24 24"><path d="M2.5 20L9 8.5l3.6 6 2.6-3.8L21.5 20z"></path><path d="M6.9 12.2l2.1 1.4 1.7-1.6"></path></symbol>
+<symbol id="i-deck" viewBox="0 0 24 24"><rect x="3" y="8" width="14" height="12" rx="2"></rect><path d="M7 4h12a2 2 0 0 1 2 2v10"></path></symbol>
+<symbol id="i-bell" viewBox="0 0 24 24"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"></path><path d="M10.3 21a1.9 1.9 0 0 0 3.4 0"></path></symbol>
+<symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="10" rx="2"></rect><path d="M8 11V7a4 4 0 0 1 8 0v4"></path></symbol>
+<symbol id="i-question" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"></circle><path d="M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.6.3-1 .9-1 1.6v.6"></path><path d="M12 17h.01"></path></symbol>
+<symbol id="i-plan" viewBox="0 0 24 24"><rect x="5" y="4" width="14" height="17" rx="2"></rect><path d="M9 3h6v3H9z"></path><path d="M9 13l2 2 4-4"></path></symbol>
+<symbol id="i-decision" viewBox="0 0 24 24"><path d="M12 21v-7"></path><path d="M12 14L5 7"></path><path d="M5 12V7h5"></path><path d="M12 14l7-7"></path><path d="M19 12V7h-5"></path></symbol>
+<symbol id="i-error" viewBox="0 0 24 24"><path d="M10.3 3.9L2.4 18a2 2 0 0 0 1.7 3h15.8a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"></path><path d="M12 9v4"></path><path d="M12 17h.01"></path></symbol>
+<symbol id="i-x-circle" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"></circle><path d="M15 9l-6 6M9 9l6 6"></path></symbol>
+<symbol id="i-changes" viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path><path d="M9 10h6"></path><path d="M12 7v6"></path></symbol>
+<symbol id="i-conflict" viewBox="0 0 24 24"><circle cx="6" cy="6" r="2.5"></circle><circle cx="6" cy="18" r="2.5"></circle><path d="M6 8.5v7"></path><path d="M6 8.5c0 3.5 3 5 7 5"></path><path d="M16 15l5 5M21 15l-5 5"></path></symbol>
+<symbol id="i-pr" viewBox="0 0 24 24"><circle cx="6" cy="6" r="2.5"></circle><circle cx="6" cy="18" r="2.5"></circle><circle cx="18" cy="18" r="2.5"></circle><path d="M6 8.5v7"></path><path d="M18 15.5V9a3 3 0 0 0-3-3h-4"></path><path d="M13 3.5L10.5 6 13 8.5"></path></symbol>
+<symbol id="i-draft" viewBox="0 0 24 24"><circle cx="6" cy="6" r="2.5"></circle><circle cx="6" cy="18" r="2.5"></circle><circle cx="18" cy="18" r="2.5"></circle><path d="M6 8.5v7"></path><path d="M18 6v1.5M18 11v1.5"></path></symbol>
+<symbol id="i-spinner" viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 9 9"></path></symbol>
+<symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"></circle><path d="M12 7v5l3 2"></path></symbol>
+<symbol id="i-pause" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"></circle><path d="M10 9v6M14 9v6"></path></symbol>
+<symbol id="i-reply" viewBox="0 0 24 24"><path d="M9 14L4 9l5-5"></path><path d="M4 9h10a6 6 0 0 1 6 6v5"></path></symbol>
+<symbol id="i-moon" viewBox="0 0 24 24"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"></path></symbol>
+<symbol id="i-stop" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"></circle><rect x="9" y="9" width="6" height="6" rx="1"></rect></symbol>
+<symbol id="i-slash" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"></circle><path d="M5.6 5.6l12.8 12.8"></path></symbol>
+<symbol id="i-merge" viewBox="0 0 24 24"><circle cx="6" cy="6" r="2.5"></circle><circle cx="6" cy="18" r="2.5"></circle><circle cx="18" cy="12" r="2.5"></circle><path d="M6 8.5v7"></path><path d="M6 8.5a6 6 0 0 0 6 3.5h3.5"></path></symbol>
+<symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"></path></symbol>
+<symbol id="i-check-circle" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"></circle><path d="M8 12.5l2.5 2.5L16 9.5"></path></symbol>
+<symbol id="i-terminal" viewBox="0 0 24 24"><path d="M5 17l6-5-6-5"></path><path d="M13 19h7"></path></symbol>
+<symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="12" height="12" rx="2"></rect><path d="M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1"></path></symbol>
+<symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path></symbol>
+<symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 11a8 8 0 0 0-14.9-3.5L3 10"></path><path d="M3 4v6h6"></path><path d="M4 13a8 8 0 0 0 14.9 3.5L21 14"></path><path d="M21 20v-6h-6"></path></symbol>
+<symbol id="i-note" viewBox="0 0 24 24"><path d="M4 20h4L19 9a2.8 2.8 0 0 0-4-4L4 16z"></path><path d="M13.5 6.5l4 4"></path></symbol>
+<symbol id="i-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1"></circle><circle cx="12" cy="12" r="1"></circle><circle cx="19" cy="12" r="1"></circle></symbol>
+<symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"></circle><path d="M20 20l-4-4"></path></symbol>
+<symbol id="i-branch" viewBox="0 0 24 24"><circle cx="6" cy="5" r="2"></circle><circle cx="6" cy="19" r="2"></circle><circle cx="18" cy="7" r="2"></circle><path d="M6 7v10"></path><path d="M18 9c0 4-4 6-10 8"></path></symbol>
+<symbol id="i-file" viewBox="0 0 24 24"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"></path><path d="M14 3v5h5"></path></symbol>
+<symbol id="i-issue" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"></circle><circle cx="12" cy="12" r="2"></circle></symbol>
+<symbol id="i-doc" viewBox="0 0 24 24"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"></path><path d="M14 3v5h5"></path><path d="M9 13h6M9 17h4"></path></symbol>
+<symbol id="i-pen" viewBox="0 0 24 24"><path d="M12 19l7-7 3 3-7 7z"></path><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18z"></path><path d="M2 2l7.6 7.6"></path><circle cx="11" cy="11" r="2"></circle></symbol>
+<symbol id="i-sparkle" viewBox="0 0 24 24"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"></path><path d="M19 17v4M17 19h4"></path></symbol>
+<symbol id="i-close" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"></path></symbol>
+<symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"></circle><path d="M12 11v5"></path><path d="M12 8h.01"></path></symbol>
+<symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"></path></symbol>
+<symbol id="i-contrast" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"></circle><path d="M12 3a9 9 0 0 1 0 18z" fill="currentColor"></path></symbol>
+<symbol id="i-plug" viewBox="0 0 24 24"><path d="M9 2v6M15 2v6"></path><path d="M6 8h12v4a6 6 0 0 1-12 0z"></path><path d="M12 18v4"></path></symbol>
+<symbol id="i-wifi-off" viewBox="0 0 24 24"><path d="M3 3l18 18"></path><path d="M8.5 16.5a5 5 0 0 1 7 0"></path><path d="M5 12.9a10 10 0 0 1 5.2-2.8"></path><path d="M19 12.9a10 10 0 0 0-2.4-1.6"></path><path d="M2 8.8a15 15 0 0 1 4.2-2.7"></path><path d="M22 8.8A15 15 0 0 0 10.7 5"></path><path d="M12 20h.01"></path></symbol>
+</defs>
+</svg>
+
+<header class="hdr">
+<div class="wrap hdr-in">
+<div class="brand">
+<span class="brand-mark"><svg class="i" aria-hidden="true"><use href="#i-peak"></use></svg><span class="brand-badge" id="needBadge" hidden></span></span>
+<span>ccdeck</span>
+<span class="host" id="host">localhost</span>
+</div>
+<span class="live" id="live" data-on="on" role="status"><span class="live-dot"></span><span id="liveText">Connecting</span><span class="live-text-long muted" id="liveSub"></span></span>
+<div class="menu-wrap" id="hintWrap" hidden></div>
+<label class="search"><span class="sr">Filter sessions</span><svg class="i" aria-hidden="true"><use href="#i-search"></use></svg><input id="q" type="search" placeholder="Filter by title, project or branch" autocomplete="off"><span class="kbd" aria-hidden="true">/</span></label>
+<div class="hdr-tools">
+<button class="toggle" id="tDone" aria-pressed="false"><span class="switch"></span><span class="toggle-label">Show done</span><span class="toggle-count" id="cDone">0</span></button>
+<button class="toggle" id="tOld" aria-pressed="false"><span class="switch"></span><span class="toggle-label">Older closed</span><span class="toggle-count" id="cOld">0</span></button>
+<div class="menu-wrap"><button class="ibtn" id="legendBtn" aria-label="Legend: what the states mean" aria-expanded="false"><svg class="i" aria-hidden="true"><use href="#i-info"></use></svg></button><div id="legendHost"></div></div>
+</div>
+</div>
 </header>
-<main>
-  <div id="banners"></div>
-  <div id="board"></div>
-  <details class="legend" id="legend"><summary>What the states mean</summary><div class="grid" id="legendGrid"></div></details>
-</main>
+<div class="ctlines" id="ct" role="img" aria-label="Session contours"><svg id="ctSvg" viewBox="0 0 1440 64" preserveAspectRatio="none" focusable="false" aria-hidden="true"></svg></div>
+
+<main class="wrap" id="main"></main>
+<div id="drawerHost"></div>
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
+</div>
 
 <script>
 "use strict";
 const TOKEN = "__CC_TOKEN__";
-const STATE_HELP = {
-  permission: "A tool call is waiting for your approval.",
-  question: "Claude asked you a question (multiple choice).",
-  plan: "Claude wrote a plan and waits for you to approve it.",
-  decision: "Claude's last message ends with a question or asks you to choose.",
-  error: "The last turn ended with an API error.",
-  ci_failing: "A PR from this session has failing checks.",
-  changes_requested: "A reviewer requested changes on a PR from this session.",
-  pr_conflict: "A PR from this session has merge conflicts.",
-  pr_review: "A PR from this session is open with green or no checks: review or merge it.",
-  working: "Claude is running right now.",
-  ci_pending: "Checks are running on a PR from this session.",
-  parked: "You set this session aside.",
-  idle: "Claude finished; the session is open and waits for your next prompt.",
-  quiet: "Last seen working, but nothing happened for 15 minutes (interrupted?).",
-  closed_midtask: "The session was closed while Claude was still working.",
-  closed: "The session isn't running and isn't marked done.",
-  pr_merged: "All PRs from this session are merged.",
-  done: "You marked it done.",
+const SVGNS = "http://www.w3.org/2000/svg";
+
+// ---- states and groups, as in the design ----
+const ST = {
+  perm: { l: "Permission needed", i: "lock", g: "need", d: "A tool call is waiting for your approval" },
+  question: { l: "Question for you", i: "question", g: "need", d: "Claude asked you something" },
+  plan: { l: "Plan to approve", i: "plan", g: "need", d: "Plan mode finished; approve or edit it" },
+  decision: { l: "Decision needed", i: "decision", g: "need", d: "Claude laid out options to choose from" },
+  error: { l: "Error", i: "error", g: "need", d: "An API or tool error stopped the session" },
+  cifail: { l: "CI failing", i: "x-circle", g: "pr", d: "At least one check failed on its PR" },
+  changes: { l: "Changes requested", i: "changes", g: "pr", d: "A reviewer asked for changes" },
+  conflict: { l: "PR has conflicts", i: "conflict", g: "pr", d: "The branch cannot merge cleanly" },
+  review: { l: "PR ready for review", i: "pr", g: "pr", d: "Checks green, waiting for review" },
+  working: { l: "Working", i: "spinner", g: "work", d: "Generating or running tools" },
+  cirun: { l: "CI running", i: "clock", g: "wait", d: "Checks are running on its PR" },
+  parked: { l: "Parked", i: "pause", g: "wait", d: "You parked it; it stays out of the way" },
+  finished: { l: "Finished, your turn", i: "reply", g: "turn", d: "Claude ended its turn" },
+  quiet: { l: "Quiet, interrupted?", i: "moon", g: "turn", d: "Process alive but silent for 15+ min" },
+  closed: { l: "Closed", i: "stop", g: "closed", d: "Process exited after finishing" },
+  midtask: { l: "Closed mid-task", i: "slash", g: "closed", d: "Process exited while it was working" },
+  merged: { l: "PR merged", i: "merge", g: "done", d: "Its PR was merged" },
+  done: { l: "Done", i: "check-circle", g: "done", d: "You marked it done" },
 };
-const ANIM = new Set(["working", "ci_pending"]);
-const ls = {
-  get(k, d) { try { const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch { return d; } },
-  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
+const SMAP = {
+  permission: "perm", question: "question", plan: "plan", decision: "decision", error: "error",
+  ci_failing: "cifail", changes_requested: "changes", pr_conflict: "conflict", pr_review: "review",
+  working: "working", ci_pending: "cirun", parked: "parked", idle: "finished", quiet: "quiet",
+  closed_midtask: "midtask", closed: "closed", pr_merged: "merged", done: "done",
+};
+const GR = [
+  { k: "need", l: "Needs you", i: "bell", layout: "focus", hint: "Oldest first" },
+  { k: "pr", l: "PRs to look at", i: "pr", layout: "cards", hint: "From gh, refreshed every 3 min" },
+  { k: "work", l: "Working", i: "spinner", layout: "rows", hint: "" },
+  { k: "wait", l: "Waiting", i: "clock", layout: "rows", hint: "CI or parked" },
+  { k: "turn", l: "Your turn", i: "reply", layout: "rows", hint: "Finished or gone quiet" },
+  { k: "closed", l: "Closed, not done", i: "stop", layout: "dense", hint: "Last 24 h" },
+  { k: "done", l: "Done", i: "check-circle", layout: "dense", hint: "" },
+];
+const OLD_AFTER = 24 * 3600;
+const LINKS = {
+  artifact: ["sparkle", "Artifact"], notion: ["doc", "Notion"], linear: ["issue", "Linear"],
+  figma: ["pen", "Figma"], gdoc: ["doc", "Google Doc"],
 };
 
-let data = null, etag = "", lastOk = 0, focusGroup = null;
-const expanded = new Set(), openFiles = new Set();
-const shq = (v) => "'" + String(v).replace(/'/g, "'\\''") + "'";
+// ---- small helpers ----
 const $ = (id) => document.getElementById(id);
-$("done").checked = ls.get("showDone", false);
-$("old").checked = ls.get("showOld", false);
-
+const ls = {
+  get(k, d) { try { const v = localStorage.getItem("ccdeck." + k); return v === null ? d : JSON.parse(v); } catch { return d; } },
+  set(k, v) { try { localStorage.setItem("ccdeck." + k, JSON.stringify(v)); } catch {} },
+};
 function h(tag, attrs, ...kids) {
   const el = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs || {})) {
@@ -216,16 +143,28 @@ function h(tag, attrs, ...kids) {
     else if (k.startsWith("on")) el.addEventListener(k.slice(2), v);
     else el.setAttribute(k, v === true ? "" : v);
   }
-  for (const kid of kids.flat()) if (kid != null && kid !== false) el.append(kid instanceof Node ? kid : String(kid));
+  for (const kid of kids.flat(Infinity)) if (kid != null && kid !== false) el.append(kid instanceof Node ? kid : String(kid));
   return el;
 }
-function ago(ts) {
+function ic(name, cls) {
+  const s = document.createElementNS(SVGNS, "svg");
+  s.setAttribute("class", "i" + (cls ? " " + cls : ""));
+  s.setAttribute("aria-hidden", "true");
+  const u = document.createElementNS(SVGNS, "use");
+  u.setAttribute("href", "#i-" + name);
+  s.append(u);
+  return s;
+}
+const oneLine = (t, n = 240) => { const s = String(t || "").replace(/\s+/g, " ").trim(); return s.length > n ? s.slice(0, n - 1) + "…" : s; };
+const firstPara = (t) => String(t || "").trim().split(/\n\s*\n/)[0] || "";
+const shq = (v) => "'" + String(v).replace(/'/g, "'\\''") + "'";
+function agoShort(ts) {
   if (!ts) return "?";
   const d = Date.now() / 1000 - ts;
-  if (d < 60) return "just now";
-  if (d < 3600) return Math.floor(d / 60) + "m ago";
-  if (d < 86400) return Math.floor(d / 3600) + "h ago";
-  return Math.floor(d / 86400) + "d ago";
+  if (d < 45) return "now";
+  if (d < 3600) return Math.max(1, Math.round(d / 60)) + "m";
+  if (d < 86400) return Math.round(d / 3600) + "h";
+  return Math.round(d / 86400) + "d";
 }
 function tok(n) {
   n = n || 0;
@@ -233,217 +172,535 @@ function tok(n) {
   if (n >= 1e3) return Math.round(n / 1e3) + "k";
   return String(n);
 }
-function usageRow(s) {
-  const u = s.usage || {}, sub = s.sub_usage || {};
-  if (!u.output && !s.context) return null;
-  const pct = s.context_limit ? Math.min(100, (100 * s.context) / s.context_limit) : 0;
-  const bc = pct >= 80 ? "--st-permission" : pct >= 50 ? "--st-working" : "--st-idle";
-  const subOut = sub.output || 0;
-  const title = [
-    `Context: ${s.context.toLocaleString()} of ${s.context_limit.toLocaleString()} tokens (${pct.toFixed(0)}%)` + (s.model ? ` · ${s.model}` : ""),
-    `Output: ${(u.output || 0).toLocaleString()}`,
-    `Input: ${((u.input || 0) + (u.cache_write || 0)).toLocaleString()} (incl. ${(u.cache_write || 0).toLocaleString()} written to cache)`,
-    `Cache reads: ${(u.cache_read || 0).toLocaleString()}`,
-    subOut ? `Subagents: ${subOut.toLocaleString()} output, ${((sub.input || 0) + (sub.cache_write || 0)).toLocaleString()} input` : null,
-  ].filter(Boolean).join("\n");
-  return h("div", { class: "usage", title },
-    h("span", { class: "ctxbar", style: `--bc: var(${bc})`, role: "img", "aria-label": `context ${pct.toFixed(0)}% used` }, h("i", { style: `width:${pct.toFixed(1)}%` })),
-    h("span", {}, `ctx ${tok(s.context)} / ${tok(s.context_limit)}`),
-    h("span", {}, `out ${tok((u.output || 0) + subOut)}`),
-    h("span", {}, `in ${tok((u.input || 0) + (u.cache_write || 0) + (u.cache_read || 0) + (sub.input || 0) + (sub.cache_write || 0) + (sub.cache_read || 0))}`));
-}
 function toast(msg) {
-  const t = $("toast"); t.textContent = msg; t.classList.add("show");
-  clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.remove("show"), 2600);
+  const t = $("toast"); t.textContent = msg; t.dataset.on = "true";
+  clearTimeout(toast.t); toast.t = setTimeout(() => { t.dataset.on = "false"; }, 2600);
 }
-function safeUrl(u) { return /^https:\/\//.test(u) ? u : null; }
+async function copy(text, what) {
+  try { await navigator.clipboard.writeText(text); toast((what || "Copied") + " to the clipboard"); }
+  catch { toast(text); }
+}
 
+// ---- state ----
+let data = null, etag = "", lastOk = 0, failures = 0;
+const ui = {
+  filter: "all", showDone: ls.get("showDone", false), showOld: ls.get("showOld", false), q: "",
+  menu: "", drawer: "", focus: "", hint: false, legend: false, hintOff: ls.get("hintOff", false),
+};
+const offline = () => !!data && failures > 0 && Date.now() - lastOk > 6000;
+
+// ---- server ----
 async function load() {
   try {
     const r = await fetch("/api/sessions", { headers: { "X-CC-Token": TOKEN, "If-None-Match": etag }, cache: "no-store" });
-    lastOk = Date.now();
-    if (r.status === 304) { renderStatus(); return; }
-    if (!r.ok) throw new Error("HTTP " + r.status);
+    if (r.status !== 304 && !r.ok) throw new Error("HTTP " + r.status);
+    const wasOffline = offline();
+    lastOk = Date.now(); failures = 0;
+    if (r.status === 304) { if (wasOffline) render(); else renderLive(); return; }
     etag = r.headers.get("ETag") || "";
     data = await r.json();
     render();
   } catch (e) {
-    renderStatus(String(e));
+    failures++;
+    if (data) render(); else renderLive();
   }
 }
-
 async function act(id, action, extra) {
+  if (offline()) { toast("Actions are paused until the server is back"); return; }
   try {
     const r = await fetch("/api/action", {
       method: "POST", headers: { "X-CC-Token": TOKEN, "Content-Type": "application/json" },
       body: JSON.stringify(Object.assign({ id, action }, extra || {})),
     });
     const j = await r.json().catch(() => ({}));
-    if (!r.ok) throw new Error(j.error || ("HTTP " + r.status));
-    const msgs = { resume: "Opening terminal" + (j.terminal ? " (" + j.terminal + ")" : "") + "…",
-      done: "Marked done", undone: "Reopened", park: "Parked", unpark: "Unparked", note: "Note saved",
-      open_folder: "Opening folder…", refresh_prs: "PR status refreshed" };
-    toast(msgs[action] || "OK");
+    if (!r.ok) throw new Error(j.error || "HTTP " + r.status);
+    const msgs = {
+      resume: "Opening a terminal" + (j.terminal ? " (" + j.terminal + ")" : "") + "…", done: "Marked done",
+      undone: "Reopened", park: "Parked", unpark: "Unparked", note: "Note saved",
+      open_folder: "Opening the folder…", refresh_prs: "PR states refreshed",
+    };
+    toast(msgs[action] || "Done");
     etag = ""; load();
   } catch (e) { toast("Failed: " + e.message); }
 }
 
-function renderStatus(err) {
-  const stale = !lastOk || Date.now() - lastOk > 8000;
-  $("pulse").classList.toggle("off", !!err || stale);
-  $("updated").textContent = err ? "Can't reach the ccdeck server" : data ? "updated " + ago(data.generated) : "";
+// ---- view model ----
+function deco(s) {
+  const k = SMAP[s.state] || "closed", st = ST[k];
+  const lastA = s.last_role === "assistant" ? s.last_text || "" : "";
+  let reason, code = "", msg = lastA || s.last_prompt || "";
+  if (k === "perm") {
+    reason = s.hook_message || ("Claude needs your permission to use " + (s.pending_tool || "a tool"));
+    code = s.pending_input || "";
+    msg = (lastA ? firstPara(lastA) + "\n\n" : "") + reason + (code ? ":" : "");
+  } else if (k === "question") {
+    reason = s.pending_input || oneLine(firstPara(lastA)) || "Claude asked you a question";
+    msg = s.pending_input || lastA || reason;
+  } else if (k === "plan") {
+    reason = "Plan: " + oneLine(s.pending_input || lastA, 200);
+    msg = s.pending_input || lastA;
+  } else if (k === "working") {
+    reason = s.pending_tool ? "Running " + s.pending_tool + (s.pending_input ? ": " + oneLine(s.pending_input, 120) : "")
+      : s.last_role === "user" ? "Working on: " + oneLine(s.last_prompt, 160) : oneLine(lastA) || "Working";
+  } else {
+    reason = oneLine(lastA) || (s.last_prompt ? "You: " + oneLine(s.last_prompt) : "");
+  }
+  const u = s.usage || {}, sub = s.sub_usage || {};
+  const used = s.context || 0, max = s.context_limit || 1000000;
+  const pct = Math.min(100, Math.round((100 * used) / max));
+  const inTok = (u.input || 0) + (u.cache_write || 0) + (u.cache_read || 0) + (sub.input || 0) + (sub.cache_write || 0) + (sub.cache_read || 0);
+  const outTok = (u.output || 0) + (sub.output || 0);
+  const prs = (s.pr_details || []).map(prView);
+  const links = [];
+  for (const [kind, urls] of Object.entries(s.links || {})) for (const url of urls) {
+    const [icon, name] = LINKS[kind] || ["doc", kind];
+    const m = kind === "linear" && url.match(/issue\/([A-Z]+-\d+)/);
+    links.push({ icon, url, label: m ? m[1] : name, full: m ? name + " · " + m[1] : name });
+  }
+  const m = s.mark || {};
+  return {
+    raw: s, id: s.id, k, g: st.g, stateLabel: st.l, icon: st.i, title: s.display_title || "(untitled)",
+    project: s.project || "?", cwd: s.cwd || "", branch: s.branch || "no branch", sid: s.id.slice(0, 8),
+    prompts: s.prompts || 0, ts: s.last_ts || 0, ago: agoShort(s.last_ts), run: !!s.alive,
+    reason, code, msg, prs, links, files: (s.files || []).length, fileList: s.files || [],
+    note: m.note || "", parked: !!m.parked, marked: !!m.done,
+    used, max, pct, lvl: pct >= 85 ? "high" : pct >= 60 ? "warn" : "ok", inTok, outTok, u, sub,
+    ctxLabel: tok(used) + " / " + tok(max),
+    ctxTitle: "Context " + tok(used) + " of " + tok(max) + " (" + pct + "%) · input " + tok(inTok) + " · output " + tok(outTok) + (s.model ? " · " + s.model : ""),
+    resumeCmd: "cd " + (s.cwd ? shq(s.cwd) : "~") + " && claude --resume " + s.id,
+  };
+}
+function prView(p) {
+  const n = p.number ? "#" + p.number : "PR";
+  let k = "draft", icon = "pr", label = "PR", short = "PR";
+  if (p.state === "merged") { k = "merged"; icon = "merge"; label = short = "Merged"; }
+  else if (p.state === "closed") { k = "draft"; icon = "slash"; label = short = "Closed"; }
+  else if (p.state === "open") {
+    if (p.checks === "failing") { k = "fail"; icon = "x-circle"; label = "CI failing"; short = "Failing"; }
+    else if (p.review === "changes_requested") { k = "changes"; icon = "changes"; label = "Changes requested"; short = "Changes"; }
+    else if (p.mergeable === "conflicting") { k = "conflict"; icon = "conflict"; label = "Conflicts"; short = "Conflicts"; }
+    else if (p.checks === "pending") { k = "run"; icon = "clock"; label = "CI running"; short = "CI running"; }
+    else if (p.review === "approved") { k = "approved"; icon = "check"; label = short = "Approved"; }
+    else if (p.draft) { k = "draft"; icon = "draft"; label = p.checks === "passing" ? "Draft · CI passing" : "Draft"; short = "Draft"; }
+    else { k = "ready"; icon = "pr"; label = "Ready for review"; short = "Ready"; }
+  } else if (p.error) { label = short = "State unknown"; }
+  return { k, icon, n, label, short, url: p.url, title: p.title || "", repo: p.repo || "", error: p.error };
+}
+function matches(s, q) {
+  if (!q) return true;
+  const hay = (s.title + " " + s.project + " " + s.branch + " " + s.note + " " + s.id).toLowerCase();
+  return q.toLowerCase().split(/\s+/).every((w) => hay.includes(w));
+}
+
+// ---- pieces ----
+const pill = (s, extra) => h("span", { class: "pill", "data-g": s.g, style: extra }, ic(s.icon), s.stateLabel);
+const run = (s) => h("span", { class: "run", "data-on": s.run ? "on" : "off" }, h("span", { class: "run-dot" }), s.run ? "Running" : "Not running");
+const ctx = (s) => h("span", { class: "ctx", "data-lvl": s.lvl, title: s.ctxTitle, tabindex: "0", "aria-label": s.ctxTitle },
+  h("span", { class: "ctx-bar" }, h("span", { class: "ctx-fill", style: "width: " + s.pct + "%" })), h("span", { class: "ctx-num" }, s.ctxLabel));
+const prChip = (p, short) => h("a", { class: "prchip", href: p.url, target: "_blank", rel: "noopener noreferrer", "data-k": p.k, title: (p.title || p.url) + (p.error ? "\n" + p.error : "") },
+  ic(p.icon), h("span", { class: "num" }, p.n), short ? p.short : p.label);
+const linkChip = (l, full) => h("a", { class: "lchip", href: l.url, target: "_blank", rel: "noopener noreferrer", title: l.url }, ic(l.icon), full ? l.full : l.label);
+const noteEl = (s) => s.note ? h("span", { class: "note" }, ic("note"), s.note) : null;
+const loc = (s, withSid) => h("div", { class: "loc" }, ic("folder"), h("span", { class: "mono", title: s.cwd }, s.project), ic("branch"),
+  h("span", { class: "mono" }, s.branch), h("span", { class: "sep" }, "·"), h("span", {}, s.prompts + (s.prompts === 1 ? " prompt" : " prompts")),
+  withSid ? [h("span", { class: "sep" }, "·"), h("span", { class: "mono" }, s.sid)] : null);
+const titleBtn = (s, cls) => h("button", { class: cls || "title-btn", "data-nav": s.id, "data-key": "t:" + s.id, onclick: () => openDrawer(s.id) }, s.title);
+
+function menu(s, up) {
+  const items = [
+    ["copy", "Copy resume command", "C", () => copy(s.resumeCmd, "Resume command")],
+    ["folder", "Open folder", "O", () => act(s.id, "open_folder")],
+    ["refresh", "Refresh PRs", "R", () => act(s.id, "refresh_prs"), !s.prs.length],
+    null,
+    ["pause", s.parked ? "Unpark" : "Park", "P", () => act(s.id, s.parked ? "unpark" : "park"), s.g === "done"],
+    ["note", s.note ? "Edit note" : "Add note", "N", () => editNote(s)],
+    ["check", s.marked ? "Reopen" : "Mark done", "D", () => act(s.id, s.marked ? "undone" : "done")],
+  ];
+  return h("div", { class: "menu" + (up ? " menu-up" : ""), role: "menu", "aria-label": "Session actions", "data-menu": s.id },
+    items.map((it, i) => it === null ? h("hr") : h("button", {
+      class: "mi", role: "menuitem", "data-key": "mi:" + s.id + ":" + i, "data-hotkey": it[2].toLowerCase(), disabled: it[4] || null,
+      onclick: (e) => { e.stopPropagation(); ui.menu = ""; it[3](); render(); },
+    }, ic(it[0]), it[1], h("span", { class: "kbd" }, it[2]))));
+}
+function menuBtn(s, up, label) {
+  const open = ui.menu === s.id;
+  return h("div", { class: "menu-wrap" },
+    h("button", { class: "ibtn ibtn-sm", "aria-label": label || "More actions", "aria-haspopup": "menu", "aria-expanded": open ? "true" : "false", "data-key": "m:" + s.id,
+      onclick: (e) => { e.stopPropagation(); ui.menu = open ? "" : s.id; render(); if (!open) focusKey("mi:" + s.id + ":0"); } }, ic("more", "i-sm")),
+    open ? menu(s, up) : null);
+}
+const resumeBtn = (s, cls, label, size) => h("button", { class: cls, "data-key": "r:" + s.id + ":" + (label || ""), onclick: () => act(s.id, "resume") }, ic("terminal", size), label || "Resume");
+const copyBtn = (s, big) => big
+  ? h("button", { class: "btn" + (big === "lg" ? " btn-lg" : ""), onclick: () => copy(s.resumeCmd, "Resume command") }, ic("copy", big === "lg" ? null : "i-sm"), "Copy command")
+  : h("button", { class: "ibtn ibtn-sm", "aria-label": "Copy resume command", title: "Copy resume command", onclick: () => copy(s.resumeCmd, "Resume command") }, ic("copy", "i-sm"));
+
+function card(s) {
+  return h("article", { class: "card", "data-g": s.g, "data-sid": s.id, "aria-label": s.stateLabel + ": " + s.title },
+    h("div", { class: "card-top" }, pill(s), run(s), h("span", { class: "grow" }), h("span", { class: "ago" }, s.ago)),
+    h("div", { style: "display: flex; flex-direction: column; gap: 3px; min-width: 0" }, h("h3", { class: "card-title" }, titleBtn(s)), loc(s)),
+    h("div", { class: "ask" }, h("p", {}, s.reason), s.code ? h("code", {}, s.code) : null),
+    h("div", { class: "card-meta" }, s.prs.map((p) => prChip(p)), s.links.map((l) => linkChip(l)), noteEl(s), h("span", { class: "grow" }),
+      s.files ? h("span", { class: "metaitem", title: "Files written" }, ic("file", "i-xs"), s.files) : null, ctx(s)),
+    h("div", { class: "card-actions" }, resumeBtn(s, "btn btn-primary", null, "i-sm"), copyBtn(s),
+      h("button", { class: "ibtn ibtn-sm hide-xs", "aria-label": "Open folder", title: "Open folder", onclick: () => act(s.id, "open_folder") }, ic("folder", "i-sm")),
+      h("span", { class: "grow" }), h("button", { class: "btn btn-ghost btn-sm", onclick: () => openDrawer(s.id) }, "Details"), menuBtn(s, true)));
+}
+function row(s) {
+  return h("div", { class: "row", role: "listitem", "data-g": s.g, "data-sid": s.id },
+    pill(s),
+    h("div", { class: "row-main" }, titleBtn(s), h("span", { class: "row-reason", title: s.reason }, s.reason)),
+    h("span", { class: "row-loc", title: s.cwd }, s.project, " ", h("span", {}, "/"), " ", s.branch),
+    h("span", { class: "row-prs" }, s.prs.map((p) => prChip(p, true)), noteEl(s)),
+    ctx(s), h("span", { class: "ago" }, s.ago),
+    h("span", { class: "row-acts" }, resumeBtn(s, "btn btn-sm resume", null, "i-sm"), menuBtn(s, false, "More actions for " + s.title)));
+}
+function focusPanel(items) {
+  const f = items.find((s) => s.id === ui.focus) || items[0];
+  ui.focus = f.id;
+  return h("div", { class: "nf" },
+    h("ol", { class: "nf-queue", "aria-label": "Needs you queue" },
+      h("li", { class: "nf-qhead", "aria-hidden": "true" }, h("span", {}, "Queue"), h("span", {}, "Oldest first")),
+      items.map((s) => h("li", {}, h("button", { class: "nf-q", "aria-current": s.id === f.id ? "true" : "false", "data-nav": s.id, "data-key": "q:" + s.id,
+        onclick: () => { ui.focus = s.id; render(); } },
+        h("span", { class: "nf-q-ic" }, ic(s.icon, "i-sm")),
+        h("span", { class: "nf-q-main" }, h("span", { class: "nf-q-title" }, s.title), h("span", { class: "nf-q-sub" }, s.stateLabel + " · " + s.project)),
+        h("span", { class: "ago" }, s.ago))))),
+    h("article", { class: "nf-main", "data-g": "need", "data-sid": f.id, "aria-label": f.stateLabel + ": " + f.title, "aria-live": "polite" },
+      h("div", { class: "nf-swap", key: f.id },
+        h("div", { class: "nf-top" }, pill(f), run(f), h("span", { class: "grow" }), h("span", { class: "nf-wait" }, "Waiting " + f.ago)),
+        h("div", { style: "display: flex; flex-direction: column; gap: 4px; min-width: 0" }, h("h3", { class: "nf-title" }, f.title), loc(f)),
+        f.msg ? h("p", { class: "nf-msg" }, f.msg.trim().slice(-2400)) : null,
+        f.code ? h("code", { class: "nf-code", title: f.code }, f.code) : null,
+        h("div", { class: "card-meta" }, f.prs.map((p) => prChip(p)), f.links.map((l) => linkChip(l)), noteEl(f), h("span", { class: "grow" }), ctx(f)),
+        h("div", { class: "nf-actions" }, resumeBtn(f, "btn btn-primary btn-lg"), copyBtn(f, "lg"), h("span", { class: "grow" }),
+          h("button", { class: "btn btn-ghost btn-sm", onclick: () => act(f.id, "open_folder") }, ic("folder", "i-sm"), "Open folder"),
+          h("button", { class: "btn btn-ghost btn-sm", "data-key": "d:" + f.id, onclick: () => openDrawer(f.id) }, "Details"),
+          menuBtn(f, true)))));
+}
+
+// ---- header pieces ----
+function renderLive() {
+  const off = offline() || (!data && failures > 0);
+  $("live").dataset.on = off ? "off" : "on";
+  $("liveText").textContent = off ? "Offline" : data ? "Live" : "Connecting";
+  const since = lastOk ? Math.round((Date.now() - lastOk) / 1000) : 0;
+  $("liveSub").textContent = off ? (lastOk ? "· last update " + agoText(since) : "") : data ? "· updated just now" : "";
+}
+const agoText = (sec) => sec < 60 ? sec + " s ago" : Math.round(sec / 60) + " min ago";
+
+function renderHint() {
+  const wrap = $("hintWrap");
+  const need = data && (!data.hooks || !data.gh) && !ui.hintOff;
+  wrap.hidden = !need;
+  if (!need) return wrap.replaceChildren();
+  const steps = [
+    { done: true, b: "ccdeck server", s: "Running on localhost:" + data.port },
+    data.gh ? { done: true, b: "PR states", s: "GitHub CLI found" }
+            : { done: false, b: "PR states", s: "Install the GitHub CLI, then run gh auth login", code: data.gh_install || "sudo apt install gh" },
+    data.hooks ? { done: true, b: "Exact live states", s: "Session hooks are reporting" }
+               : { done: false, b: "Exact live states", s: "Install the ccdeck plugin in Claude Code", code: "/plugin install ccdeck --marketplace slonik923/ccdeck" },
+  ];
+  wrap.replaceChildren(
+    h("button", { class: "hintpill", "aria-expanded": ui.hint ? "true" : "false", "aria-controls": "hintpop", "data-key": "hint",
+      onclick: (e) => { e.stopPropagation(); ui.hint = !ui.hint; renderHint(); } },
+      h("span", { class: "hintpill-dot" }), data.hooks ? "Setup" : "Estimated states", ic("chevron")),
+    ui.hint ? h("div", { class: "hintpop", id: "hintpop", role: "dialog", "aria-label": "Make states exact", onclick: (e) => e.stopPropagation() },
+      h("div", {}, h("p", { class: "hint-title" }, data.hooks ? "One more step for PR states" : "States are estimated from transcripts"),
+        h("p", { class: "hint-text" }, data.hooks ? "ccdeck asks the GitHub CLI whether each session's PR is green, needs changes or is merged."
+          : "Without the plugin, ccdeck reads each session's log, so a permission prompt can show up a few seconds late. The plugin makes states exact.")),
+      h("ol", { class: "hintsteps" }, steps.map((st) => h("li", { class: "hintstep", "data-done": st.done ? "true" : "false" },
+        h("span", { class: "hintstep-ic" }, ic(st.done ? "check" : "plug", "i-sm")),
+        h("div", {}, h("b", {}, st.b), h("span", {}, st.s), st.code ? h("code", {}, st.code) : null),
+        st.code ? h("button", { class: "btn btn-sm", onclick: () => copy(st.code, "Command") }, "Copy") : null))),
+      h("div", { class: "hint-foot" }, h("span", {}, "Takes effect for new sessions."),
+        h("button", { class: "linkbtn", onclick: () => { ui.hintOff = true; ls.set("hintOff", true); renderHint(); } }, "Don’t show again"))) : null);
+}
+
+function renderLegend() {
+  $("legendBtn").setAttribute("aria-expanded", ui.legend ? "true" : "false");
+  $("legendHost").replaceChildren(ui.legend ? h("div", { class: "legend", role: "dialog", "aria-label": "State legend", onclick: (e) => e.stopPropagation() },
+    GR.map((g) => h("div", { "data-g": g.k },
+      h("h4", {}, h("span", { class: "gicon", style: "width: 18px; height: 18px; border-radius: 4px; display: grid; place-items: center; background: var(--g-tint); color: var(--g)" }, ic(g.i, "i-xs")), g.l),
+      h("ul", {}, Object.values(ST).filter((s) => s.g === g.k).map((s) => h("li", {},
+        h("span", { class: "pill", "data-g": g.k, style: "height: 20px; font-size: 11px" }, ic(s.i), s.l), h("span", { style: "padding-top: 2px" }, s.d))))))) : "");
+}
+
+// Session contours: at most 10 lines, shared out by state in proportion (largest remainder,
+// every present state gets one); fixed bands: needs you, PRs, working, waiting, the rest.
+function renderContours(all, stale) {
+  const lineGroup = { need: "need", pr: "pr", work: "work", wait: "wait", turn: "turn", closed: "turn", done: "turn" };
+  const order = ["need", "pr", "work", "wait", "turn"];
+  const names = { need: "need you", pr: "PRs to look at", work: "working", wait: "waiting", turn: "finished or done" };
+  const counts = {};
+  all.forEach((s) => { const k = lineGroup[s.g]; counts[k] = (counts[k] || 0) + 1; });
+  const present = order.filter((k) => counts[k]);
+  const MAXL = 10, alloc = {};
+  if (all.length <= MAXL) present.forEach((k) => { alloc[k] = counts[k]; });
+  else {
+    let used = 0; const rem = [];
+    present.forEach((k) => { const exact = (counts[k] / all.length) * MAXL; alloc[k] = Math.max(1, Math.floor(exact)); used += alloc[k]; rem.push([k, exact - Math.floor(exact)]); });
+    rem.sort((a, b) => b[1] - a[1]);
+    for (let i = 0; used < MAXL && rem.length; i++) { alloc[rem[i % rem.length][0]]++; used++; }
+    while (used > MAXL) { const k = present.slice().sort((a, b) => alloc[b] - alloc[a])[0]; alloc[k]--; used--; }
+  }
+  const specs = [];
+  present.forEach((k) => { for (let j = 0; j < alloc[k]; j++) specs.push({ g: k, label: counts[k] + " " + names[k] }); });
+  if (!specs.length) specs.push({ g: "idle", label: "No sessions yet" });
+  const gap = specs.length > 1 ? 44 / (specs.length - 1) : 0, top = specs.length > 1 ? 10 : 30;
+  const svg = $("ctSvg");
+  svg.replaceChildren(...specs.map((c, i) => {
+    const pts = [];
+    for (let x = 0; x <= 1440; x += 36) {
+      const t = x / 1440;
+      const y = top + i * gap + 5 * Math.sin(t * Math.PI * 2.4 + i * 0.32) + 3 * Math.sin(t * Math.PI * 6.6 + 1.3 + i * 0.18);
+      pts.push(x + " " + y.toFixed(1));
+    }
+    const p = document.createElementNS(SVGNS, "path");
+    p.setAttribute("class", "ctl"); p.setAttribute("data-g", c.g); p.setAttribute("d", "M" + pts.join("L"));
+    const t = document.createElementNS(SVGNS, "title"); t.textContent = c.label; p.append(t);
+    return p;
+  }));
+  $("ct").dataset.stale = stale ? "true" : "false";
+  $("ct").setAttribute("aria-label", "Session contours: " + (present.map((k) => counts[k] + " " + names[k]).join(", ") || "no sessions"));
 }
 
 function setFavicon(n, color) {
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><circle cx="16" cy="16" r="14" fill="${color}"/>` +
-    (n ? `<text x="16" y="21.5" font-size="15" font-family="sans-serif" font-weight="700" fill="#fff" text-anchor="middle">${n > 9 ? "9+" : n}</text>` : "") + "</svg>";
+    (n ? `<text x="16" y="21.5" font-size="15" font-family="sans-serif" font-weight="700" fill="#0B1621" text-anchor="middle">${n > 9 ? "9+" : n}</text>` : "") + "</svg>";
   $("favicon").href = "data:image/svg+xml," + encodeURIComponent(svg);
 }
 
-function matches(s, q) {
-  if (!q) return true;
-  const hay = [s.display_title, s.project, s.cwd_short, s.branch, s.mark && s.mark.note, s.id, s.label].join(" ").toLowerCase();
-  return q.toLowerCase().split(/\s+/).every((w) => hay.includes(w));
-}
-
-function visible() {
-  const q = $("q").value.trim(), showDone = $("done").checked, showOld = $("old").checked;
-  const cutoff = Date.now() / 1000 - (data.default_days || 14) * 86400;
-  return data.sessions.filter((s) => {
-    if (!matches(s, q)) return false;
-    if (s.group === "done" && !showDone) return false;
-    if (s.group === "closed" && s.last_ts < cutoff && !showOld) return false;
-    return true;
-  });
-}
-
-function prChip(p) {
-  let label = p.number ? "#" + p.number : "PR", st = "", col = "--st-closed";
-  if (p.state === "merged") { st = "merged"; col = "--st-pr_merged"; }
-  else if (p.state === "closed") { st = "closed"; }
-  else if (p.state === "open") {
-    if (p.checks === "failing") { st = "CI failing"; col = "--st-ci_failing"; }
-    else if (p.review === "changes_requested") { st = "changes requested"; col = "--st-changes_requested"; }
-    else if (p.mergeable === "conflicting") { st = "conflicts"; col = "--st-pr_conflict"; }
-    else if (p.checks === "pending") { st = "CI running"; col = "--st-ci_pending"; }
-    else if (p.review === "approved") { st = "approved"; col = "--st-idle"; }
-    else { st = p.draft ? "draft · ready" : "ready"; col = "--st-pr_review"; }
-  } else if (p.error) { st = "?"; }
-  const repo = p.repo ? p.repo.split("/")[1] : "";
-  return h("a", { class: "chip pr", href: safeUrl(p.url), target: "_blank", rel: "noopener noreferrer",
-      title: (p.title || p.url) + (p.error ? "\n(" + p.error + ")" : ""), style: `--pc: var(${col})` },
-    "PR ", h("b", {}, label), repo ? h("span", { class: "mono" }, repo) : null, st ? h("span", { class: "s" }, st) : null);
-}
-
-const LINK_NAMES = { artifact: "Artifact", notion: "Notion", linear: "Linear", figma: "Figma", gdoc: "Google Doc" };
-function linkChip(kind, url) {
-  let label = LINK_NAMES[kind] || kind;
-  const m = kind === "linear" && url.match(/issue\/([A-Z]+-\d+)/);
-  if (m) label = m[1];
-  return h("a", { class: "chip", href: safeUrl(url), target: "_blank", rel: "noopener noreferrer", title: url }, label);
-}
-
-function card(s) {
-  const c = `var(--st-${s.state})`;
-  const m = s.mark || {};
-  const isOpen = expanded.has(s.id);
-  const text = s.hook_message || (s.last_role === "assistant" ? s.last_text : s.last_prompt);
-  const who = s.hook_message ? "Claude Code" : s.last_role === "assistant" ? "Claude" : "You";
-  const links = [];
-  for (const p of s.pr_details || []) links.push(prChip(p));
-  for (const [kind, urls] of Object.entries(s.links || {})) for (const u of urls) links.push(linkChip(kind, u));
-  const files = s.files || [];
-  const cmd = `cd ${s.cwd ? shq(s.cwd) : "~"} && claude --resume ${s.id}`;
-
-  return h("article", { class: "card" + (s.group === "done" || s.group === "closed" ? " dim" : ""), style: `--c: ${c}` },
-    h("div", { class: "top" },
-      h("span", { class: "pill" + (ANIM.has(s.state) ? " anim" : ""), title: STATE_HELP[s.state] || "" }, h("span", { class: "d" }), s.label),
-      h("span", { class: "live" + (s.alive ? "" : " no"), title: s.live_source === "guess" ? "Guessed from running processes (install hooks for exact state)" : "" },
-        h("i"), s.alive ? "running" : "not running"),
-      h("span", { class: "age", title: new Date(s.last_ts * 1000).toLocaleString() }, ago(s.last_ts))),
-    h("h3", { class: "title" }, s.display_title),
-    h("div", { class: "meta" },
-      h("span", { title: s.cwd || "" }, s.cwd_short),
-      s.branch ? h("span", { class: "mono" }, "⎇ " + s.branch) : null,
-      h("span", {}, s.prompts + (s.prompts === 1 ? " prompt" : " prompts")),
-      h("span", { class: "mono", title: s.id }, s.id.slice(0, 8))),
-    usageRow(s),
-    m.note ? h("div", { class: "note" }, "📝 " + m.note) : null,
-    text ? h("div", { class: "msg" + (isOpen ? " open" : ""), title: isOpen ? "Click to collapse" : "Click to expand",
-      onclick: () => { isOpen ? expanded.delete(s.id) : expanded.add(s.id); render(); } },
-      h("span", { class: "who" }, who), isOpen ? text.trim() : text.trim().slice(-600)) : null,
-    links.length ? h("div", { class: "links" }, links) : null,
-    files.length ? h("details", { class: "files", open: openFiles.has(s.id),
-      ontoggle: (e) => { e.target.open ? openFiles.add(s.id) : openFiles.delete(s.id); } }, h("summary", {}, files.length + (files.length === 1 ? " file" : " files") + " written"),
-      h("ul", {}, files.slice(-30).map((f) => h("li", { class: "mono" }, f)))) : null,
-    h("div", { class: "actions" },
-      h("button", { class: "btn primary", onclick: () => act(s.id, "resume"), title: "Open a terminal and resume this session" }, "Resume ▸"),
-      h("button", { class: "btn", title: cmd, onclick: async () => {
-        try { await navigator.clipboard.writeText(cmd); toast("Resume command copied"); } catch { toast(cmd); } } }, "Copy cmd"),
-      h("button", { class: "btn", onclick: () => act(s.id, "open_folder") }, "Folder"),
-      (s.pr_details || []).length ? h("button", { class: "btn", onclick: () => act(s.id, "refresh_prs") }, "↻ PRs") : null,
-      m.parked ? h("button", { class: "btn", onclick: () => act(s.id, "unpark") }, "Unpark")
-               : s.group !== "done" ? h("button", { class: "btn", onclick: () => act(s.id, "park") }, "Park") : null,
-      h("button", { class: "btn", onclick: () => {
-        const v = prompt("Note for this session (empty to clear):", m.note || "");
-        if (v !== null) act(s.id, "note", { text: v });
-      } }, "Note"),
-      m.done ? h("button", { class: "btn", onclick: () => act(s.id, "undone") }, "Reopen")
-             : h("button", { class: "btn", onclick: () => act(s.id, "done") }, "Done ✓")));
-}
-
+// ---- main render ----
 function render() {
+  renderLive();
   if (!data) return;
-  renderStatus();
-  const rows = visible();
-  const byGroup = {};
-  for (const s of rows) (byGroup[s.group] = byGroup[s.group] || []).push(s);
+  const keep = document.activeElement && document.activeElement.dataset ? document.activeElement.dataset.key : null;
+  const now = Date.now() / 1000;
+  const isOff = offline();
+  const all = data.sessions.map(deco);
+  const q = ui.q.trim();
+  const count = (k) => all.filter((s) => s.g === k).length;
+  const needN = count("need"), prN = count("pr"), doneN = count("done");
+  const oldClosed = all.filter((s) => s.g === "closed" && now - s.ts > OLD_AFTER).length;
 
-  const urgent = (data.counts.needs || 0) + (data.counts.review || 0);
-  document.title = (urgent ? `(${urgent}) ` : "") + "ccdeck";
-  const favColor = data.counts.needs ? "#d93036" : data.counts.review ? "#7c4dcc" : data.counts.working ? "#c98a00" : "#23864a";
-  setFavicon(urgent, favColor);
+  document.title = (needN ? `(${needN}) ` : "") + "ccdeck";
+  setFavicon(needN, needN ? "#E9887D" : prN ? "#C393C2" : count("work") ? "#F0B44C" : "#10b981");
+  $("needBadge").hidden = !needN || isOff; $("needBadge").textContent = needN;
+  $("host").textContent = "localhost:" + data.port;
+  $("cDone").textContent = doneN; $("tDone").setAttribute("aria-pressed", ui.showDone ? "true" : "false");
+  $("cOld").textContent = oldClosed; $("tOld").setAttribute("aria-pressed", ui.showOld ? "true" : "false");
+  renderHint(); renderLegend(); renderContours(all, isOff);
 
-  $("summary").replaceChildren(...data.groups.map((g) => {
-    const hiddenDone = g.key === "done" && !$("done").checked;
-    const n = hiddenDone ? (data.counts.done || 0) : (byGroup[g.key] || []).length;
-    return h("button", { class: "sum" + (n && !hiddenDone ? "" : " zero") + (focusGroup === g.key ? " active" : ""), style: `--gc: var(--g-${g.key})`,
-      title: hiddenDone ? "Show done sessions" : "Show only this group",
-      onclick: () => { if (hiddenDone) { $("done").checked = true; ls.set("showDone", true); }
-        focusGroup = focusGroup === g.key ? null : g.key; render();
-        const el = document.getElementById("g-" + g.key); if (el && focusGroup) el.scrollIntoView({ behavior: "smooth", block: "start" }); } },
-      h("span", { class: "dot" }), g.label, h("b", {}, n));
-  }));
+  const visibleGroup = (k) => isOff ? k === "need" : ui.filter === "all" ? (k !== "done" || ui.showDone) : ui.filter === k;
+  const groups = GR.filter((g) => visibleGroup(g.k)).map((g) => {
+    let items = all.filter((s) => s.g === g.k && matches(s, q));
+    if (g.k === "closed" && !ui.showOld) items = items.filter((s) => now - s.ts <= OLD_AFTER);
+    items.sort((a, b) => g.k === "need" ? a.ts - b.ts : b.ts - a.ts);
+    return Object.assign({}, g, { items });
+  }).filter((g) => g.items.length);
+  const listed = groups.reduce((a, g) => a + g.items.length, 0);
 
-  const banners = [];
-  if (!data.hooks) banners.push(h("div", { class: "banner" }, "Live states are guessed. Install the plugin (", h("code", {}, "/plugin install ccdeck --marketplace slonik923/ccdeck"), ") or run ", h("code", {}, "ccdeck install"), " so sessions report their exact state."));
-  if (!data.gh) banners.push(h("div", { class: "banner" }, "PR states need the GitHub CLI: ", h("code", {}, "sudo apt install gh"), " then ", h("code", {}, "gh auth login"), "."));
-  $("banners").replaceChildren(...banners);
-
-  const sections = data.groups.filter((g) => byGroup[g.key] && (!focusGroup || focusGroup === g.key)).map((g) =>
-    h("section", { id: "g-" + g.key, style: `--gc: var(--g-${g.key})` },
-      h("h2", {}, h("span", { class: "dot" }), g.label, h("span", {}, "· " + byGroup[g.key].length)),
-      h("div", { class: "grid" }, byGroup[g.key].map(card))));
-  $("board").replaceChildren(...(sections.length ? sections : [h("div", { class: "empty" },
-    data.sessions.length ? "Nothing matches. Try the toggles above." : "No Claude Code sessions found in ~/.claude/projects yet.")]));
-
-  if (!$("legendGrid").childElementCount) {
-    $("legendGrid").replaceChildren(...Object.entries(data.states).map(([k, v]) =>
-      h("div", { style: `--c: var(--st-${k})` }, h("span", { class: "pill" }, h("span", { class: "d" }), v.label), " ", STATE_HELP[k] || "")));
+  const out = [];
+  if (isOff) {
+    out.push(h("div", { class: "banners" }, h("div", { class: "banner", "data-tone": "error", role: "alert" }, ic("wifi-off"),
+      h("span", { class: "banner-text" }, h("b", {}, "Can’t reach the ccdeck server on localhost:" + data.port + "."),
+        " Retrying every 2 s (attempt " + failures + "). If it stopped, start it again with ", h("code", {}, "ccdeck serve")),
+      h("button", { class: "btn btn-sm", onclick: () => load() }, "Retry now"))));
+  } else if (all.length) {
+    out.push(h("nav", { class: "filters", "aria-label": "Filter by group" },
+      [{ k: "all", l: "All", n: all.length - doneN }].concat(GR.map((g) => ({ k: g.k, l: g.l, n: count(g.k) }))).map((c) => {
+        const alarm = c.k === "need" && c.n > 0;
+        return h("button", { class: "fchip", "data-g": c.k, "data-zero": c.n === 0 && c.k !== "all" ? "true" : "false", "data-alarm": alarm ? "true" : "false",
+          "data-hidden": c.k === "done" && !ui.showDone ? "true" : "false", "aria-pressed": ui.filter === c.k ? "true" : "false", "data-key": "f:" + c.k,
+          onclick: () => { ui.filter = ui.filter === c.k ? "all" : c.k; if (c.k === "done") { ui.showDone = true; ls.set("showDone", true); } render(); } },
+          alarm ? ic("bell", "i-sm") : c.k !== "all" ? h("span", { class: "dot" }) : null, c.l + " ", h("b", {}, c.n));
+      })));
   }
+
+  if (!all.length && !isOff) {
+    out.push(h("div", { class: "empty" },
+      emptyArt(),
+      h("h2", {}, "No Claude Code sessions yet"),
+      h("p", {}, "ccdeck lists every session under ", h("span", { class: "mono" }, "~/.claude/projects"), ". Start one in any terminal and it shows up here within 2 seconds."),
+      h("div", { class: "cmd", style: "width: 100%; max-width: 360px; text-align: left" }, h("span", {}, "claude"), h("button", { class: "btn btn-sm", onclick: () => copy("claude", "Command") }, "Copy")),
+      !data.hooks ? h("p", { style: "font-size: 13px; color: var(--text-3)" }, "For exact live states, also install the plugin: ", h("span", { class: "mono" }, "/plugin install ccdeck --marketplace slonik923/ccdeck")) : null));
+  } else if (!isOff && !needN && !prN && !q && ui.filter === "all") {
+    const workN = count("work"), waitN = count("wait");
+    out.push(h("div", { class: "calm", role: "status" }, calmArt(), h("div", {}, h("h2", {}, "Nothing needs you"),
+      h("p", {}, workN + waitN === 0 ? "Everything is done. Nothing is running, and finished sessions are under Done whenever you want them."
+        : workN + " working and " + waitN + " waiting. When a session needs you, it lands at the top of this page and the tab title shows a count."))));
+  }
+  if (isOff) out.push(h("div", { class: "section", style: "padding-top: 24px; padding-bottom: 0" },
+    h("span", { class: "stale-tag" }, ic("clock", "i-sm"), "Last known state, " + agoText(Math.round(Date.now() / 1000 - lastOk / 1000)) + ". Actions are paused until the server is back.")));
+
+  for (const g of groups) {
+    const strong = g.k === "need";
+    let body;
+    if (g.layout === "focus") body = focusPanel(g.items);
+    else if (g.layout === "cards") body = h("div", { class: "cards" }, g.items.map(card));
+    else body = [h("div", { class: g.layout === "dense" ? "rows rows-dense" : "rows", "data-g": g.k, role: "list" }, g.items.map(row)),
+      g.k === "closed" && oldClosed ? h("div", { class: "more-line" }, h("span", {}, ui.showOld ? "Showing " + oldClosed + " older closed sessions" : oldClosed + " older closed sessions hidden"),
+        h("button", { class: "linkbtn", onclick: toggleOld }, ui.showOld ? "Hide" : "Show"), h("span", { class: "rule" })) : null];
+    out.push(h("section", { class: "section", "data-g": g.k, "aria-labelledby": "h-" + g.k },
+      h("div", { class: strong ? "ghdr ghdr-strong" : g.layout === "dense" ? "ghdr ghdr-quiet" : "ghdr" },
+        h("h2", { id: "h-" + g.k }, h("span", { class: "gicon" }, ic(g.i)), g.l + " ", h("span", { class: "gcount" }, g.items.length)),
+        h("span", { class: "rule" }), h("span", { class: "ghint" }, g.hint)),
+      h("div", { class: isOff ? "stale" : "" }, body),
+      isOff ? staleMore(all) : null));
+  }
+  if (q && !listed && all.length) out.push(h("div", { class: "empty", style: "padding-top: 48px" }, h("h2", {}, "No sessions match “" + q + "”"),
+    h("p", {}, "Filters look at title, project, branch and note."), h("button", { class: "btn", onclick: () => { $("q").value = ""; ui.q = ""; render(); } }, "Clear filter")));
+  if (!isOff && ui.filter === "all" && !ui.showDone && doneN) out.push(h("div", { class: "more-line", style: "margin-top: 32px" }, ic("check-circle", "i-sm"),
+    h("span", {}, doneN + " done sessions hidden"), h("button", { class: "linkbtn", onclick: toggleDone }, "Show"), h("span", { class: "rule" })));
+  out.push(h("footer", { class: "foot" },
+    h("span", {}, ic("refresh", "i-sm"), isOff ? "Paused · last good update " + agoText(Math.round((Date.now() - lastOk) / 1000)) : "Refreshes every 2 s · " + all.length + " sessions on this machine"),
+    h("span", {}, h("span", { class: "kbd" }, "/"), " filter"), h("span", {}, h("span", { class: "kbd" }, "j"), h("span", { class: "kbd" }, "k"), " move"),
+    h("span", {}, h("span", { class: "kbd" }, "↵"), " details"), h("span", {}, h("span", { class: "kbd" }, "r"), " resume"),
+    h("span", {}, h("span", { class: "kbd" }, "."), " actions")));
+  $("main").replaceChildren(...out);
+  renderDrawer(all);
+  if (keep) focusKey(keep);
+}
+function staleMore(all) {
+  const parts = GR.filter((g) => g.k !== "need" && g.k !== "done").map((g) => [all.filter((s) => s.g === g.k).length, g.l.toLowerCase()]).filter((x) => x[0]);
+  if (!parts.length) return null;
+  const n = parts.reduce((a, x) => a + x[0], 0);
+  return h("div", { class: "more-line" }, h("span", {}, "+ " + n + " more sessions in the last snapshot: " + parts.map((x) => x[0] + " " + x[1]).join(", ")), h("span", { class: "rule" }));
+}
+function svgFrom(markup) {
+  const t = document.createElement("template");
+  t.innerHTML = markup; // static markup written here, never data
+  return t.content.firstChild;
+}
+const calmArt = () => svgFrom('<svg class="calm-art" viewBox="0 0 88 88" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="44" cy="44" r="40" opacity=".18"></circle><circle cx="44" cy="44" r="28" opacity=".35"></circle><circle cx="44" cy="44" r="16"></circle><path d="M37 44.5l5 5 9-10"></path></svg>');
+const emptyArt = () => svgFrom('<svg class="empty-art" viewBox="0 0 112 112" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="14" y="24" width="84" height="64" rx="8"></rect><path d="M14 38h84"></path><circle cx="24" cy="31" r="1.5"></circle><circle cx="31" cy="31" r="1.5"></circle><circle cx="38" cy="31" r="1.5"></circle><path d="M28 54l10 8-10 8"></path><path d="M46 72h16"></path></svg>');
+
+// ---- detail drawer ----
+let drawerSig = "";
+function openDrawer(id) { ui.drawer = id; ui.menu = ""; drawerSig = ""; render(); setTimeout(() => focusKey("dr-close"), 0); }
+function closeDrawer() { const id = ui.drawer; ui.drawer = ""; drawerSig = ""; renderDrawer([]); if (id) focusKey("t:" + id); }
+function renderDrawer(all) {
+  const host = $("drawerHost");
+  const s = all.find((x) => x.id === ui.drawer);
+  if (!s) { if (!ui.drawer || all.length) { host.replaceChildren(); if (ui.drawer && all.length) ui.drawer = ""; } return; }
+  const sig = JSON.stringify(s.raw) + "|" + offline();
+  if (sig === drawerSig) return;
+  const active = document.activeElement;
+  if (active && active.id === "dr-note" && host.contains(active)) return; // don't clobber typing
+  drawerSig = sig;
+  const scroll = host.querySelector(".drawer") ? host.querySelector(".drawer").scrollTop : 0;
+  const msgHead = s.g === "need" ? s.stateLabel : "Claude’s last message";
+  const hint = s.k === "perm" ? "Approve or deny in the terminal. Resume opens the session in a new terminal window."
+    : s.k === "question" || s.k === "decision" ? "Answer in the terminal. Resume opens the session in a new terminal window."
+    : s.k === "error" ? "Resume and type “continue” to retry from the last step." + (s.pct >= 80 ? " Context is at " + s.pct + "%, so consider /compact first." : "") : "";
+  const u = s.u, sub = s.sub, inOf = (x) => (x.input || 0) + (x.cache_write || 0) + (x.cache_read || 0);
+  const subUsed = Object.values(sub).some((v) => v);
+  const tokRows = [["Main session", inOf(u), u.cache_read || 0, u.output || 0]];
+  if (subUsed) tokRows.push(["Subagents", inOf(sub), sub.cache_read || 0, sub.output || 0]);
+  tokRows.push(["Total", inOf(u) + inOf(sub), (u.cache_read || 0) + (sub.cache_read || 0), (u.output || 0) + (sub.output || 0)]);
+  const note = h("textarea", { id: "dr-note", class: "notebox", placeholder: "e.g. waiting on QA", onchange: (e) => act(s.id, "note", { text: e.target.value }) });
+  note.value = s.note;
+  host.replaceChildren(
+    h("div", { class: "scrim", onclick: closeDrawer }),
+    h("aside", { class: "drawer", role: "dialog", "aria-modal": "true", "aria-labelledby": "dr-title", "data-g": s.g },
+      h("div", { class: "dr-head" },
+        h("div", { class: "card-top" }, pill(s), run(s), h("span", { class: "grow" }), h("span", { class: "ago" }, s.ago === "now" ? "just now" : s.ago + " ago"),
+          h("button", { class: "ibtn ibtn-sm", "aria-label": "Close details", "data-key": "dr-close", onclick: closeDrawer }, ic("close"))),
+        h("h2", { class: "dr-title", id: "dr-title" }, s.title), loc(s, true),
+        h("div", { class: "dr-actions" }, resumeBtn(s, "btn btn-primary btn-lg", "Resume session"), copyBtn(s, "lg")),
+        h("div", { class: "dr-actions", style: "gap: 2px; padding-top: 0; margin-left: -10px" },
+          h("button", { class: "btn btn-ghost btn-sm", onclick: () => act(s.id, "open_folder") }, ic("folder", "i-sm"), "Open folder"),
+          s.prs.length ? h("button", { class: "btn btn-ghost btn-sm", onclick: () => act(s.id, "refresh_prs") }, ic("refresh", "i-sm"), "Refresh PRs") : null,
+          s.g !== "done" ? h("button", { class: "btn btn-ghost btn-sm", onclick: () => act(s.id, s.parked ? "unpark" : "park") }, ic("pause", "i-sm"), s.parked ? "Unpark" : "Park") : null,
+          h("button", { class: "btn btn-ghost btn-sm", onclick: () => $("dr-note").focus() }, ic("note", "i-sm"), "Note"),
+          h("button", { class: "btn btn-ghost btn-sm", onclick: () => act(s.id, s.marked ? "undone" : "done") }, ic("check", "i-sm"), s.marked ? "Reopen" : "Mark done"))),
+      h("div", { class: "dr-body" },
+        h("section", { class: "dsec" }, h("h3", {}, msgHead), h("p", { class: "msg" }, (s.msg || s.reason || "No messages yet.").trim()),
+          s.code ? h("div", { class: "cmd", "data-g": s.g, style: "background: var(--g-tint); border-color: var(--g-line)" }, h("span", {}, s.code)) : null,
+          hint ? h("p", { style: "margin: 0; font-size: 12px; color: var(--text-3)" }, hint) : null),
+        h("section", { class: "dsec" }, h("h3", {}, "Resume command"),
+          h("div", { class: "cmd" }, h("span", {}, s.resumeCmd), h("button", { class: "btn btn-sm", onclick: () => copy(s.resumeCmd, "Resume command") }, ic("copy", "i-xs"), "Copy"))),
+        s.prs.length ? h("section", { class: "dsec" }, h("h3", {}, "Pull requests"), s.prs.map((p) => h("div", { class: "prcard" },
+          h("div", { class: "prcard-h" }, prChip(p), h("span", { class: "ttl" }, p.title || p.repo), h("span", { class: "muted", style: "font-size: 12px; white-space: nowrap" }, p.repo))))) : null,
+        s.links.length ? h("section", { class: "dsec" }, h("h3", {}, "Links"), h("div", { class: "links" }, s.links.map((l) => linkChip(l, true)))) : null,
+        s.fileList.length ? h("section", { class: "dsec" }, h("h3", {}, "Files written · " + s.fileList.length),
+          h("ul", { class: "files" }, s.fileList.slice(-40).map((f) => h("li", {}, h("span", { title: f }, f.startsWith(s.cwd + "/") ? f.slice(s.cwd.length + 1) : f))))) : null,
+        h("section", { class: "dsec" }, h("h3", {}, "Tokens"),
+          h("div", { class: "tok-big" }, h("b", {}, tok(s.used)), h("span", { class: "muted" }, "of " + tok(s.max) + " context window · " + s.pct + "%")),
+          h("div", { class: "bigbar", role: "img", "aria-label": "Context window " + tok(s.used) + " of " + tok(s.max) }, h("span", { style: "width: " + s.pct + "%; background: var(--text-2)" })),
+          h("table", { class: "ttable" }, h("thead", {}, h("tr", {}, h("th", {}, "Usage"), h("th", { class: "n" }, "Input"), h("th", { class: "n" }, "Cached"), h("th", { class: "n" }, "Output"))),
+            h("tbody", {}, tokRows.map((r) => h("tr", {}, h("td", {}, r[0]), h("td", { class: "n" }, tok(r[1])), h("td", { class: "n" }, tok(r[2])), h("td", { class: "n" }, tok(r[3]))))))),
+        h("section", { class: "dsec" }, h("h3", {}, "Your note"), h("label", { class: "sr", for: "dr-note" }, "Note for this session"), note),
+        h("section", { class: "dsec" }, h("h3", {}, "Session"), h("dl", { class: "dl" },
+          h("dt", {}, "Session id"), h("dd", {}, s.id), h("dt", {}, "Folder"), h("dd", {}, s.raw.cwd_short || s.cwd),
+          h("dt", {}, "Branch"), h("dd", {}, s.branch), h("dt", {}, "Prompts"), h("dd", {}, s.prompts),
+          h("dt", {}, "Model"), h("dd", {}, s.raw.model || "—"),
+          h("dt", {}, "Last activity"), h("dd", {}, new Date(s.ts * 1000).toLocaleString()))))));
+  const d = host.querySelector(".drawer"); if (d) d.scrollTop = scroll;
 }
 
-$("q").addEventListener("input", render);
-$("done").addEventListener("change", (e) => { ls.set("showDone", e.target.checked); render(); });
-$("old").addEventListener("change", (e) => { ls.set("showOld", e.target.checked); render(); });
+// ---- interactions ----
+function focusKey(key) {
+  const el = document.querySelector('[data-key="' + CSS.escape(key) + '"]');
+  if (el) el.focus({ preventScroll: true });
+}
+function editNote(s) {
+  const v = prompt("Note for “" + s.title + "” (empty to clear):", s.note);
+  if (v !== null) act(s.id, "note", { text: v });
+}
+function toggleDone() { ui.showDone = !ui.showDone; ls.set("showDone", ui.showDone); if (ui.filter === "done") ui.filter = "all"; render(); }
+function toggleOld() { ui.showOld = !ui.showOld; ls.set("showOld", ui.showOld); render(); }
+$("tDone").addEventListener("click", toggleDone);
+$("tOld").addEventListener("click", toggleOld);
+$("legendBtn").addEventListener("click", (e) => { e.stopPropagation(); ui.legend = !ui.legend; renderLegend(); });
+$("q").addEventListener("input", (e) => { ui.q = e.target.value; render(); });
+document.addEventListener("click", () => {
+  let changed = false;
+  if (ui.menu) { ui.menu = ""; changed = true; }
+  if (ui.hint) { ui.hint = false; renderHint(); }
+  if (ui.legend) { ui.legend = false; renderLegend(); }
+  if (changed) render();
+});
+const sidOf = (el) => { const x = el && el.closest && el.closest("[data-sid],[data-nav]"); return x ? x.dataset.sid || x.dataset.nav : ""; };
 document.addEventListener("keydown", (e) => {
-  if (e.key === "/" && document.activeElement !== $("q")) { e.preventDefault(); $("q").focus(); }
-  if (e.key === "Escape") { $("q").value = ""; focusGroup = null; render(); }
+  const t = e.target, typing = t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA");
+  if (e.key === "Escape") {
+    if (ui.menu) { const id = ui.menu; ui.menu = ""; render(); focusKey("m:" + id); }
+    else if (ui.drawer) closeDrawer();
+    else if (ui.hint || ui.legend) { ui.hint = ui.legend = false; renderHint(); renderLegend(); }
+    else if (t === $("q") && ui.q) { $("q").value = ""; ui.q = ""; render(); }
+    return;
+  }
+  if (typing || e.ctrlKey || e.metaKey || e.altKey) return;
+  if (ui.menu) {
+    const mi = document.querySelector('[data-menu="' + CSS.escape(ui.menu) + '"] [data-hotkey="' + e.key.toLowerCase() + '"]');
+    if (mi && !mi.disabled) { e.preventDefault(); mi.click(); return; }
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      const items = [...document.querySelectorAll('[data-menu="' + CSS.escape(ui.menu) + '"] .mi:not([disabled])')];
+      const i = items.indexOf(document.activeElement);
+      const n = items[(i + (e.key === "ArrowDown" ? 1 : -1) + items.length) % items.length];
+      if (n) { e.preventDefault(); n.focus(); }
+      return;
+    }
+  }
+  if (e.key === "/") { e.preventDefault(); $("q").focus(); return; }
+  if (e.key === "j" || e.key === "k") {
+    const nav = [...document.querySelectorAll("#main [data-nav]")];
+    if (!nav.length) return;
+    const i = nav.indexOf(document.activeElement);
+    const n = nav[i < 0 ? 0 : Math.max(0, Math.min(nav.length - 1, i + (e.key === "j" ? 1 : -1)))];
+    e.preventDefault(); n.focus(); n.scrollIntoView({ block: "nearest" });
+    return;
+  }
+  const sid = sidOf(document.activeElement);
+  if (!sid) return;
+  if (e.key === "r") { e.preventDefault(); act(sid, "resume"); }
+  else if (e.key === ".") { e.preventDefault(); ui.menu = sid; render(); focusKey("mi:" + sid + ":0"); }
 });
 
 load();
 setInterval(load, 2000);
-setInterval(() => { if (data) render(); }, 30000);
+setInterval(() => { if (data) render(); else renderLive(); }, 30000);
 </script>
 </body>
 </html>
