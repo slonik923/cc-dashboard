@@ -699,3 +699,38 @@ body { background: #0B1621; }
 .ccd .toast { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); z-index: 80; max-width: calc(100% - 32px); padding: 8px 14px; border-radius: var(--r-md); background: var(--text); color: var(--bg); font-size: var(--t-13); opacity: 0; transition: opacity var(--dur-2); pointer-events: none; }
 .ccd .toast[data-on="true"] { opacity: 1; }
 .ccd .btn[disabled], .ccd .ibtn[disabled] { opacity: .5; cursor: not-allowed; }
+
+/* ---------- Rendered messages (Markdown) ---------- */
+.ccd .md { white-space: normal; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.ccd .md > * { margin: 0; }
+.ccd .md p { margin: 0; }
+.ccd .md h3, .ccd .md h4, .ccd .md h5, .ccd .md h6, .ccd .md h7, .ccd .md h8 { margin: 6px 0 0; font-family: var(--font-display, var(--font)); font-weight: 500; color: var(--text); line-height: 1.25; }
+.ccd .md h3 { font-size: 20px; } .ccd .md h4 { font-size: 17px; } .ccd .md h5, .ccd .md h6, .ccd .md h7, .ccd .md h8 { font-size: 15px; }
+.ccd .md ul, .ccd .md ol { margin: 0; padding-left: 22px; display: flex; flex-direction: column; gap: 4px; }
+.ccd .md li > .md, .ccd .md li > ul, .ccd .md li > ol { margin-top: 4px; }
+.ccd .md code { font: 500 .92em var(--mono); padding: 1px 5px; border-radius: var(--r-xs); background: var(--surface-2); color: var(--text); }
+.ccd .md pre { margin: 0; padding: 10px 12px; border-radius: var(--r-md); background: var(--surface-2); border: 1px solid var(--border); overflow-x: auto; }
+.ccd .md pre code { padding: 0; background: none; font: 12.5px/1.55 var(--mono); white-space: pre; }
+.ccd .md blockquote { margin: 0; padding: 2px 0 2px 12px; border-left: 2px solid var(--border-strong); color: var(--text-2); }
+.ccd .md hr { width: 100%; border: 0; border-top: 1px solid var(--border); margin: 4px 0; }
+.ccd .md a { color: var(--wait-fg); text-decoration: underline; text-decoration-color: color-mix(in srgb, var(--wait-fg) 40%, transparent); text-underline-offset: 2px; overflow-wrap: anywhere; }
+.ccd .md strong { font-weight: 650; color: var(--text); }
+.ccd .md-table { overflow-x: auto; border: 1px solid var(--border); border-radius: var(--r-md); }
+.ccd .md table { border-collapse: collapse; width: 100%; font-size: 13px; }
+.ccd .md th, .ccd .md td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+.ccd .md th { font-weight: 600; color: var(--text-2); background: var(--surface-2); white-space: nowrap; }
+.ccd .md tr:last-child td { border-bottom: 0; }
+.ccd .nf-msg.md { max-height: 520px; overflow-y: auto; }
+
+/* ---------- Linear issues and links ---------- */
+.ccd .lchip.issue .num { font-family: var(--mono); font-weight: 600; letter-spacing: .02em; }
+.ccd .metaitem.linkcount { all: unset; box-sizing: border-box; cursor: pointer; display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--text-3); padding: 2px 4px; border-radius: var(--r-xs); }
+.ccd .metaitem.linkcount:hover { color: var(--text); background: var(--surface-2); }
+.ccd .metaitem.linkcount:focus-visible { outline: 2px solid var(--focus); }
+.ccd .reflist { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.ccd .reflist li { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 10px; }
+.ccd .ref-title { color: var(--text); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-decoration: none; }
+a.ref-title:hover { text-decoration: underline; }
+.ccd .ref-src { font-size: 11.5px; color: var(--text-3); white-space: nowrap; }
+.ccd .showall { align-self: flex-start; margin-top: 2px; font-size: 12px; }
+.ccd .reflist .showall-li, .ccd .files .showall-li { display: block; }

@@ -223,6 +223,62 @@ class UsageTest(unittest.TestCase):
                          ["0", "999", "92k", "1M", "15.5M"])
 
 
+class LinksTest(unittest.TestCase):
+    """Linear issues, Notion pages and artifacts: shared by you, created in the session, or mentioned."""
+
+    @classmethod
+    def setUpClass(cls):
+        notion_url = "https://www.notion.so/acme/Webhook-spec-" + "a" * 32
+        created_notion = "https://www.notion.so/" + "b" * 32
+        entries = [
+            user("Implement the webhook from " + notion_url + " and keep UTF-8 output", 30),
+            asst([tool("l1", "mcp__Linear__get_issue", {"id": "ENG-42"})], 29),
+            result("l1", 29, json.dumps({"identifier": "ENG-42", "title": "Stripe webhooks",
+                                         "url": "https://linear.app/acme/issue/ENG-42/stripe-webhooks"})),
+            asst([tool("n1", "mcp__Notion__notion-create-pages", {"pages": [{}]})], 28),
+            result("n1", 28, json.dumps({"pages": [{"id": "b" * 32, "url": created_notion, "title": "Rollout plan"}]})),
+            asst([tool("a1", "Artifact", {"file_path": "/tmp/x.html", "title": "Queue comparison"})], 27),
+            result("a1", 27, "Published https://claude.ai/artifact/abc123XYZ (private)"),
+            asst([text("Done. See ENG-42 and the plan. Also OPS-9 is unrelated.")], 26),
+        ]
+        for e in entries:
+            e["gitBranch"] = "juraj/eng-57-email-queue"
+        write_session("s-refs", entries)
+        cls.s = by_id(cc.collect(True, 10 ** 6))["s-refs"]
+        cls.refs = {r["url"]: r for r in cls.s["refs"]}
+        cls.linear = {r["key"]: r for r in cls.s["linear_list"]}
+        cls.notion_url, cls.created_notion = notion_url, created_notion
+
+    def test_link_you_shared_gets_title_from_slug(self):
+        r = self.refs[self.notion_url]
+        self.assertEqual((r["kind"], r["source"], r["title"]), ("notion", "you", "Webhook spec"))
+
+    def test_created_links_get_titles_from_tool_results(self):
+        self.assertEqual((self.refs[self.created_notion]["source"], self.refs[self.created_notion]["title"]), ("created", "Rollout plan"))
+        art = self.refs["https://claude.ai/artifact/abc123XYZ"]
+        self.assertEqual((art["kind"], art["source"], art["title"]), ("artifact", "created", "Queue comparison"))
+
+    def test_linear_from_tool_branch_and_mentions(self):
+        self.assertEqual(self.linear["ENG-42"]["title"], "Stripe webhooks")
+        self.assertEqual(self.linear["ENG-42"]["url"], "https://linear.app/acme/issue/ENG-42")
+        b = self.linear["ENG-57"]  # from the branch; team ENG is known, workspace learned from ENG-42
+        self.assertTrue(b["primary"])
+        self.assertEqual((b["source"], b["url"]), ("branch", "https://linear.app/acme/issue/ENG-57"))
+        self.assertEqual(self.s["linear_list"][0]["key"], "ENG-57")
+
+    def test_unknown_teams_are_not_issues(self):
+        self.assertNotIn("UTF-8", self.linear)
+        self.assertNotIn("OPS-9", self.linear)
+
+    def test_env_teams(self):
+        os.environ["CCDECK_LINEAR_TEAMS"] = "OPS"
+        try:
+            s = by_id(cc.collect(True, 10 ** 6))["s-refs"]
+            self.assertIn("OPS-9", {r["key"] for r in s["linear_list"]})
+        finally:
+            del os.environ["CCDECK_LINEAR_TEAMS"]
+
+
 class HookTest(unittest.TestCase):
     def run_hook(self, payload):
         import io
@@ -404,6 +460,51 @@ class InstallTest(unittest.TestCase):
         cc.SETTINGS_FILE.unlink()
 
 
+class PluginInstallTest(unittest.TestCase):
+    """`ccdeck install` run from Claude Code's plugin cache hands over to a stable copy."""
+
+    def plugin_copy(self, version):
+        root = TMP / ".claude" / "plugins" / "cache" / "ccdeck" / "ccdeck" / version
+        shutil.rmtree(root, ignore_errors=True)
+        (root / "web").mkdir(parents=True)
+        src = (ROOT / "ccdeck").read_text().replace('VERSION = "%s"' % cc.VERSION, 'VERSION = "%s"' % version)
+        (root / "ccdeck").write_text(src)
+        (root / "ccdeck").chmod(0o755)
+        for f in (ROOT / "web").iterdir():
+            shutil.copy(f, root / "web" / f.name)
+        return root
+
+    def run_ccdeck(self, script, *args, stdin=None):
+        import subprocess
+        env = dict(os.environ, CCDECK_AUTOSTART="0")
+        env.pop("CCDECK_FROM_PLUGIN", None)
+        return subprocess.run([sys.executable, str(script), *args], input=stdin, capture_output=True, text=True, env=env, timeout=30)
+
+    def tearDown(self):
+        shutil.rmtree(cc.STABLE_DIR, ignore_errors=True)
+        link = TMP / ".local" / "bin" / "ccdeck"
+        if link.is_symlink():
+            link.unlink()
+
+    def test_install_from_plugin_uses_stable_copy(self):
+        root = self.plugin_copy("9.1.0")
+        r = self.run_ccdeck(root / "ccdeck", "install", "--no-hooks", "--no-service")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        link = TMP / ".local" / "bin" / "ccdeck"
+        # resolve(): on macOS the temp HOME lives under /var, a symlink to /private/var
+        self.assertEqual(Path(os.readlink(link)).resolve(), (cc.STABLE_DIR / "ccdeck").resolve())
+        self.assertEqual((cc.STABLE_DIR / "VERSION").read_text().strip(), "9.1.0")
+        self.assertTrue((cc.STABLE_DIR / "web" / "index.html").exists())
+
+    def test_plugin_update_refreshes_stable_copy(self):
+        self.run_ccdeck(self.plugin_copy("9.1.0") / "ccdeck", "install", "--no-hooks", "--no-service")
+        newer = self.plugin_copy("9.2.0")
+        self.run_ccdeck(newer / "ccdeck", "hook",
+                        stdin=json.dumps({"session_id": "s-up", "hook_event_name": "SessionStart"}))
+        self.assertEqual((cc.STABLE_DIR / "VERSION").read_text().strip(), "9.2.0")
+        self.assertIn('VERSION = "9.2.0"', (cc.STABLE_DIR / "ccdeck").read_text())
+
+
 class ServerTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -493,6 +594,17 @@ class PsProcessTest(unittest.TestCase):
         self.assertTrue(cc.is_claude_cmd(["/Users/me/.local/share/claude/versions/2.1.321", "--resume"]))
         self.assertTrue(cc.is_claude_cmd(["claude"]))
         self.assertFalse(cc.is_claude_cmd(["/bin/zsh"]))
+
+
+class GuessLiveTest(unittest.TestCase):
+    def test_n_processes_mark_n_newest_sessions_open(self):
+        mk = lambda sid, ts: {"id": sid, "cwd": "/w/app", "last_ts": ts}
+        sessions = {k: mk(k, ts) for k, ts in [("old", 1), ("mid", 2), ("new", 3), ("resumed", 0)]}
+        procs = [(1, "/w/app", ["claude"]), (2, "/w/app", ["claude"]), (3, "/w/app", ["claude", "--resume", "resumed"])]
+        live = cc.guess_live_sessions(sessions, {}, procs, "claude --resume resumed")
+        self.assertEqual(live, {"new", "mid"})  # 3 processes, one of them is the resumed session
+        hooks = {"new": {"pid": os.getpid(), "pid_start": cc.proc_start_time(os.getpid())}}
+        self.assertEqual(cc.guess_live_sessions(sessions, hooks, procs, "claude --resume resumed"), {"mid"})
 
 
 class MacDesktopTest(unittest.TestCase):

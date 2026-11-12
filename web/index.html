@@ -224,6 +224,95 @@ async function act(id, action, extra) {
   } catch (e) { toast("Failed: " + e.message); }
 }
 
+// ---- markdown: a small renderer that builds DOM nodes (never innerHTML), for Claude's messages ----
+const shortUrl = (u) => { try { const x = new URL(u); return x.host + oneLine(x.pathname, 40); } catch { return u; } };
+function tail(text, n) {
+  const t = String(text || "").trim();
+  if (t.length <= n) return t;
+  const cut = t.indexOf("\n\n", t.length - n);
+  return "…\n\n" + t.slice(cut > 0 ? cut + 2 : t.length - n);
+}
+const INLINE = /(`+)([\s\S]+?)\1|\*\*([^*]+?)\*\*|__([^_]+?)__|~~([^~]+?)~~|\*([^*\s][^*]*?)\*|(?<![\w])_([^_\s][^_]*?)_(?![\w])|\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)|(https?:\/\/[^\s<>()\]]+[^\s<>()\].,;:!?'"])/g;
+function inline(text) {
+  const out = [];
+  const re = new RegExp(INLINE.source, "g"); // per call: inline() recurses for nested emphasis
+  let last = 0, m;
+  while ((m = re.exec(text))) {
+    if (m.index > last) out.push(text.slice(last, m.index));
+    if (m[2] !== undefined) out.push(h("code", {}, m[2]));
+    else if (m[3] !== undefined || m[4] !== undefined) out.push(h("strong", {}, inline(m[3] ?? m[4])));
+    else if (m[5] !== undefined) out.push(h("del", {}, inline(m[5])));
+    else if (m[6] !== undefined || m[7] !== undefined) out.push(h("em", {}, inline(m[6] ?? m[7])));
+    else if (m[8] !== undefined) out.push(h("a", { href: m[9], target: "_blank", rel: "noopener noreferrer" }, inline(m[8])));
+    else if (m[10] !== undefined) out.push(h("a", { href: m[10], target: "_blank", rel: "noopener noreferrer" }, shortUrl(m[10])));
+    last = re.lastIndex;
+  }
+  if (last < text.length) out.push(text.slice(last));
+  return out;
+}
+const cells = (line) => line.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((c) => c.trim());
+function md(text) {
+  const lines = String(text || "").replace(/\r\n?/g, "\n").split("\n");
+  const out = [];
+  let i = 0;
+  const isTableSep = (l) => /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/.test(l);
+  const listRe = /^\s*([-*+]|\d+[.)])\s+(.*)$/;
+  while (i < lines.length) {
+    const l = lines[i];
+    if (!l.trim()) { i++; continue; }
+    const fence = l.match(/^\s*(```|~~~)\s*([\w+-]*)/);
+    if (fence) {
+      const body = []; i++;
+      while (i < lines.length && !lines[i].trim().startsWith(fence[1])) body.push(lines[i++]);
+      i++;
+      out.push(h("pre", {}, h("code", { "data-lang": fence[2] || null }, body.join("\n"))));
+      continue;
+    }
+    const hd = l.match(/^\s*(#{1,6})\s+(.*?)\s*#*\s*$/);
+    if (hd) { out.push(h("h" + Math.min(6, hd[1].length + 2), {}, inline(hd[2]))); i++; continue; }
+    if (/^\s*([-*_])(\s*\1){2,}\s*$/.test(l)) { out.push(h("hr")); i++; continue; }
+    if (l.includes("|") && i + 1 < lines.length && isTableSep(lines[i + 1])) {
+      const head = cells(l); i += 2;
+      const rows = [];
+      while (i < lines.length && lines[i].includes("|") && lines[i].trim()) rows.push(cells(lines[i++]));
+      out.push(h("div", { class: "md-table" }, h("table", {},
+        h("thead", {}, h("tr", {}, head.map((c) => h("th", {}, inline(c))))),
+        h("tbody", {}, rows.map((r) => h("tr", {}, head.map((_, j) => h("td", {}, inline(r[j] || "")))))))));
+      continue;
+    }
+    if (/^\s*>/.test(l)) {
+      const q = [];
+      while (i < lines.length && /^\s*>/.test(lines[i])) q.push(lines[i++].replace(/^\s*>\s?/, ""));
+      out.push(h("blockquote", {}, md(q.join("\n"))));
+      continue;
+    }
+    const lm = l.match(listRe);
+    if (lm) {
+      const ordered = /\d/.test(lm[1]);
+      const items = [];
+      while (i < lines.length) {
+        const m2 = lines[i].match(listRe);
+        if (m2 && /\d/.test(m2[1]) === ordered) { items.push([m2[2]]); i++; }
+        else if (items.length && lines[i].trim() && /^\s{2,}/.test(lines[i]) && !listRe.test(lines[i])) { items[items.length - 1].push(lines[i].trim()); i++; }
+        else if (items.length && /^\s{2,}/.test(lines[i]) && listRe.test(lines[i])) { items[items.length - 1].push(lines[i].trim()); i++; }
+        else break;
+      }
+      const start = ordered ? parseInt(lm[1], 10) : null;
+      out.push(h(ordered ? "ol" : "ul", { start: ordered && start !== 1 ? String(start) : null },
+        items.map((it) => h("li", {}, inline(it[0]), it.length > 1 ? md(it.slice(1).join("\n")) : null))));
+      continue;
+    }
+    const para = [];
+    while (i < lines.length && lines[i].trim() && !/^\s*(#{1,6}\s|```|~~~|>)/.test(lines[i]) && !listRe.test(lines[i])
+      && !(lines[i].includes("|") && i + 1 < lines.length && isTableSep(lines[i + 1]))) para.push(lines[i++]);
+    if (!para.length) { para.push(lines[i++]); }
+    const kids = [];
+    para.forEach((p, j) => { if (j) kids.push(h("br")); kids.push(inline(p)); });
+    out.push(h("p", {}, kids));
+  }
+  return out;
+}
+
 // ---- view model ----
 function deco(s) {
   const k = SMAP[s.state] || "closed", st = ST[k];
@@ -251,18 +340,19 @@ function deco(s) {
   const inTok = (u.input || 0) + (u.cache_write || 0) + (u.cache_read || 0) + (sub.input || 0) + (sub.cache_write || 0) + (sub.cache_read || 0);
   const outTok = (u.output || 0) + (sub.output || 0);
   const prs = (s.pr_details || []).map(prView);
-  const links = [];
-  for (const [kind, urls] of Object.entries(s.links || {})) for (const url of urls) {
-    const [icon, name] = LINKS[kind] || ["doc", kind];
-    const m = kind === "linear" && url.match(/issue\/([A-Z]+-\d+)/);
-    links.push({ icon, url, label: m ? m[1] : name, full: m ? name + " · " + m[1] : name });
-  }
+  const links = (s.refs || []).map((r) => {
+    const [icon, name] = LINKS[r.kind] || ["doc", r.kind];
+    const t = r.title ? oneLine(r.title, 60) : "";
+    return { icon, url: r.url, name, title: t, source: r.source,
+      label: t ? name + " · " + oneLine(t, 26) : name, full: t ? name + " · " + t : name };
+  });
+  const issues = (s.linear || []).map((r) => ({ key: r.key, url: r.url, title: r.title || "", source: r.source, primary: !!r.primary }));
   const m = s.mark || {};
   return {
     raw: s, id: s.id, k, g: st.g, stateLabel: st.l, icon: st.i, title: s.display_title || "(untitled)",
     project: s.project || "?", cwd: s.cwd || "", branch: s.branch || "no branch", sid: s.id.slice(0, 8),
     prompts: s.prompts || 0, ts: s.last_ts || 0, ago: agoShort(s.last_ts), run: !!s.alive,
-    reason, code, msg, prs, links, files: (s.files || []).length, fileList: s.files || [],
+    reason, code, msg, prs, links, issues, files: (s.files || []).length, fileList: s.files || [],
     note: m.note || "", parked: !!m.parked, marked: !!m.done,
     used, max, pct, lvl: pct >= 85 ? "high" : pct >= 60 ? "warn" : "ok", inTok, outTok, u, sub,
     ctxLabel: tok(used) + " / " + tok(max),
@@ -288,7 +378,8 @@ function prView(p) {
 }
 function matches(s, q) {
   if (!q) return true;
-  const hay = (s.title + " " + s.project + " " + s.branch + " " + s.note + " " + s.id).toLowerCase();
+  const hay = [s.title, s.project, s.branch, s.note, s.id, ...s.issues.map((i) => i.key + " " + i.title),
+    ...s.links.map((l) => l.full)].join(" ").toLowerCase();
   return q.toLowerCase().split(/\s+/).every((w) => hay.includes(w));
 }
 
@@ -299,6 +390,22 @@ const ctx = (s) => h("span", { class: "ctx", "data-lvl": s.lvl, title: s.ctxTitl
   h("span", { class: "ctx-bar" }, h("span", { class: "ctx-fill", style: "width: " + s.pct + "%" })), h("span", { class: "ctx-num" }, s.ctxLabel));
 const prChip = (p, short) => h("a", { class: "prchip", href: p.url, target: "_blank", rel: "noopener noreferrer", "data-k": p.k, title: (p.title || p.url) + (p.error ? "\n" + p.error : "") },
   ic(p.icon), h("span", { class: "num" }, p.n), short ? p.short : p.label);
+const SOURCE = { created: "created here", you: "you shared", claude: "mentioned", tool: "looked up", branch: "from the branch" };
+function issueChip(i, withTitle) {
+  const tip = i.key + (i.title ? " · " + i.title : "") + (i.url ? "" : "\nSet CCDECK_LINEAR_WORKSPACE to make this a link");
+  const kids = [ic("issue"), h("span", { class: "num" }, i.key), withTitle && i.title ? oneLine(i.title, 40) : null];
+  return i.url ? h("a", { class: "lchip issue", href: i.url, target: "_blank", rel: "noopener noreferrer", title: tip }, kids)
+    : h("span", { class: "lchip issue", title: tip }, kids);
+}
+// Previews show at most a few chips; the rest is one click away in the details.
+function chipRow(s, max, withTitle) {
+  const all = [...s.issues.map((i) => () => issueChip(i, withTitle && s.issues.length === 1)),
+    ...s.prs.map((p) => () => prChip(p, max < 4)), ...s.links.map((l) => () => linkChip(l))];
+  const shown = all.slice(0, max).map((f) => f());
+  const rest = all.length - shown.length;
+  if (rest > 0) shown.push(h("button", { class: "metaitem linkcount", title: "Show all in the details", onclick: () => openDrawer(s.id) }, "+" + rest));
+  return shown;
+}
 const linkChip = (l, full) => h("a", { class: "lchip", href: l.url, target: "_blank", rel: "noopener noreferrer", title: l.url }, ic(l.icon), full ? l.full : l.label);
 const noteEl = (s) => s.note ? h("span", { class: "note" }, ic("note"), s.note) : null;
 const loc = (s, withSid) => h("div", { class: "loc" }, ic("folder"), h("span", { class: "mono", title: s.cwd }, s.project), ic("branch"),
@@ -339,7 +446,7 @@ function card(s) {
     h("div", { class: "card-top" }, pill(s), run(s), h("span", { class: "grow" }), h("span", { class: "ago" }, s.ago)),
     h("div", { style: "display: flex; flex-direction: column; gap: 3px; min-width: 0" }, h("h3", { class: "card-title" }, titleBtn(s)), loc(s)),
     h("div", { class: "ask" }, h("p", {}, s.reason), s.code ? h("code", {}, s.code) : null),
-    h("div", { class: "card-meta" }, s.prs.map((p) => prChip(p)), s.links.map((l) => linkChip(l)), noteEl(s), h("span", { class: "grow" }),
+    h("div", { class: "card-meta" }, chipRow(s, 4), noteEl(s), h("span", { class: "grow" }),
       s.files ? h("span", { class: "metaitem", title: "Files written" }, ic("file", "i-xs"), s.files) : null, ctx(s)),
     h("div", { class: "card-actions" }, resumeBtn(s, "btn btn-primary", null, "i-sm"), copyBtn(s),
       h("button", { class: "ibtn ibtn-sm hide-xs", "aria-label": "Open folder", title: "Open folder", onclick: () => act(s.id, "open_folder") }, ic("folder", "i-sm")),
@@ -350,7 +457,7 @@ function row(s) {
     pill(s),
     h("div", { class: "row-main" }, titleBtn(s), h("span", { class: "row-reason", title: s.reason }, s.reason)),
     h("span", { class: "row-loc", title: s.cwd }, s.project, " ", h("span", {}, "/"), " ", s.branch),
-    h("span", { class: "row-prs" }, s.prs.map((p) => prChip(p, true)), noteEl(s)),
+    h("span", { class: "row-prs" }, chipRow(s, 2), noteEl(s)),
     ctx(s), h("span", { class: "ago" }, s.ago),
     h("span", { class: "row-acts" }, resumeBtn(s, "btn btn-sm resume", null, "i-sm"), menuBtn(s, false, "More actions for " + s.title)));
 }
@@ -369,9 +476,9 @@ function focusPanel(items) {
       h("div", { class: "nf-swap", key: f.id },
         h("div", { class: "nf-top" }, pill(f), run(f), h("span", { class: "grow" }), h("span", { class: "nf-wait" }, "Waiting " + f.ago)),
         h("div", { style: "display: flex; flex-direction: column; gap: 4px; min-width: 0" }, h("h3", { class: "nf-title" }, f.title), loc(f)),
-        f.msg ? h("p", { class: "nf-msg" }, f.msg.trim().slice(-2400)) : null,
+        f.msg ? h("div", { class: "nf-msg md" }, md(tail(f.msg, 3000))) : null,
         f.code ? h("code", { class: "nf-code", title: f.code }, f.code) : null,
-        h("div", { class: "card-meta" }, f.prs.map((p) => prChip(p)), f.links.map((l) => linkChip(l)), noteEl(f), h("span", { class: "grow" }), ctx(f)),
+        h("div", { class: "card-meta" }, chipRow(f, 4, true), noteEl(f), h("span", { class: "grow" }), ctx(f)),
         h("div", { class: "nf-actions" }, resumeBtn(f, "btn btn-primary btn-lg"), copyBtn(f, "lg"), h("span", { class: "grow" }),
           h("button", { class: "btn btn-ghost btn-sm", onclick: () => act(f.id, "open_folder") }, ic("folder", "i-sm"), "Open folder"),
           h("button", { class: "btn btn-ghost btn-sm", "data-key": "d:" + f.id, onclick: () => openDrawer(f.id) }, "Details"),
@@ -577,9 +684,21 @@ const emptyArt = () => svgFrom('<svg class="empty-art" viewBox="0 0 112 112" fil
 
 // ---- detail drawer ----
 let drawerSig = "";
+const expanded = {}; // drawer sections opened with "Show all", per session
+let lastAll = [];
+function capped(s, key, items, n, render, inList) {
+  const open = expanded[s.id + ":" + key];
+  const shown = open ? items : items.slice(0, n);
+  const more = items.length - n;
+  const btn = more > 0 ? h("button", { class: "linkbtn showall", "data-key": "more:" + key,
+    onclick: () => { expanded[s.id + ":" + key] = !open; drawerSig = ""; renderDrawer(lastAll); focusKey("more:" + key); } },
+    open ? "Show fewer" : "Show all " + items.length) : null;
+  return [shown.map(render), btn && inList ? h("li", { class: "showall-li" }, btn) : btn];
+}
 function openDrawer(id) { ui.drawer = id; ui.menu = ""; drawerSig = ""; render(); setTimeout(() => focusKey("dr-close"), 0); }
 function closeDrawer() { const id = ui.drawer; ui.drawer = ""; drawerSig = ""; renderDrawer([]); if (id) focusKey("t:" + id); }
 function renderDrawer(all) {
+  if (all.length) lastAll = all;
   const host = $("drawerHost");
   const s = all.find((x) => x.id === ui.drawer);
   if (!s) { if (!ui.drawer || all.length) { host.replaceChildren(); if (ui.drawer && all.length) ui.drawer = ""; } return; }
@@ -615,16 +734,21 @@ function renderDrawer(all) {
           h("button", { class: "btn btn-ghost btn-sm", onclick: () => $("dr-note").focus() }, ic("note", "i-sm"), "Note"),
           h("button", { class: "btn btn-ghost btn-sm", onclick: () => act(s.id, s.marked ? "undone" : "done") }, ic("check", "i-sm"), s.marked ? "Reopen" : "Mark done"))),
       h("div", { class: "dr-body" },
-        h("section", { class: "dsec" }, h("h3", {}, msgHead), h("p", { class: "msg" }, (s.msg || s.reason || "No messages yet.").trim()),
+        h("section", { class: "dsec" }, h("h3", {}, msgHead), h("div", { class: "msg md" }, md((s.msg || s.reason || "No messages yet.").trim())),
           s.code ? h("div", { class: "cmd", "data-g": s.g, style: "background: var(--g-tint); border-color: var(--g-line)" }, h("span", {}, s.code)) : null,
           hint ? h("p", { style: "margin: 0; font-size: 12px; color: var(--text-3)" }, hint) : null),
         h("section", { class: "dsec" }, h("h3", {}, "Resume command"),
           h("div", { class: "cmd" }, h("span", {}, s.resumeCmd), h("button", { class: "btn btn-sm", onclick: () => copy(s.resumeCmd, "Resume command") }, ic("copy", "i-xs"), "Copy"))),
-        s.prs.length ? h("section", { class: "dsec" }, h("h3", {}, "Pull requests"), s.prs.map((p) => h("div", { class: "prcard" },
+        s.prs.length ? h("section", { class: "dsec" }, h("h3", {}, "Pull requests · " + s.prs.length), capped(s, "prs", s.prs, 3, (p) => h("div", { class: "prcard" },
           h("div", { class: "prcard-h" }, prChip(p), h("span", { class: "ttl" }, p.title || p.repo), h("span", { class: "muted", style: "font-size: 12px; white-space: nowrap" }, p.repo))))) : null,
-        s.links.length ? h("section", { class: "dsec" }, h("h3", {}, "Links"), h("div", { class: "links" }, s.links.map((l) => linkChip(l, true)))) : null,
+        s.issues.length ? h("section", { class: "dsec" }, h("h3", {}, "Linear · " + s.issues.length), h("ul", { class: "reflist" }, capped(s, "issues", s.issues, 4, (i) => h("li", {},
+          issueChip(i), h("span", { class: "ref-title" }, i.title || (i.url ? "" : "No title seen yet")), h("span", { class: "ref-src" }, SOURCE[i.source] || "")), true))) : null,
+        s.links.length ? h("section", { class: "dsec" }, h("h3", {}, "Links · " + s.links.length), h("ul", { class: "reflist" }, capped(s, "links", s.links, 5, (l) => h("li", {},
+          h("a", { class: "lchip", href: l.url, target: "_blank", rel: "noopener noreferrer", title: l.url }, ic(l.icon), l.name),
+          h("a", { class: "ref-title", href: l.url, target: "_blank", rel: "noopener noreferrer" }, l.title || shortUrl(l.url)),
+          h("span", { class: "ref-src" }, SOURCE[l.source] || "")), true))) : null,
         s.fileList.length ? h("section", { class: "dsec" }, h("h3", {}, "Files written · " + s.fileList.length),
-          h("ul", { class: "files" }, s.fileList.slice(-40).map((f) => h("li", {}, h("span", { title: f }, f.startsWith(s.cwd + "/") ? f.slice(s.cwd.length + 1) : f))))) : null,
+          h("ul", { class: "files" }, capped(s, "files", s.fileList.slice().reverse(), 6, (f) => h("li", {}, h("span", { title: f }, f.startsWith(s.cwd + "/") ? f.slice(s.cwd.length + 1) : f)), true))) : null,
         h("section", { class: "dsec" }, h("h3", {}, "Tokens"),
           h("div", { class: "tok-big" }, h("b", {}, tok(s.used)), h("span", { class: "muted" }, "of " + tok(s.max) + " context window · " + s.pct + "%")),
           h("div", { class: "bigbar", role: "img", "aria-label": "Context window " + tok(s.used) + " of " + tok(s.max) }, h("span", { style: "width: " + s.pct + "%; background: var(--text-2)" })),
@@ -635,6 +759,8 @@ function renderDrawer(all) {
           h("dt", {}, "Session id"), h("dd", {}, s.id), h("dt", {}, "Folder"), h("dd", {}, s.raw.cwd_short || s.cwd),
           h("dt", {}, "Branch"), h("dd", {}, s.branch), h("dt", {}, "Prompts"), h("dd", {}, s.prompts),
           h("dt", {}, "Model"), h("dd", {}, s.raw.model || "—"),
+          h("dt", {}, "Running"), h("dd", {}, (s.run ? "Yes" : "No") + " · " + (s.raw.live_source === "hook"
+            ? "reported by the session's hooks" : "guessed: no hook has reported for this session")),
           h("dt", {}, "Last activity"), h("dd", {}, new Date(s.ts * 1000).toLocaleString()))))));
   const d = host.querySelector(".drawer"); if (d) d.scrollTop = scroll;
 }
