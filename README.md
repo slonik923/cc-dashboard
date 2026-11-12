@@ -146,6 +146,15 @@ ccdeck serve           run the dashboard in the foreground (instead of the servi
 - **Token usage** comes from the `usage` that Claude Code saves with each response. Each response is counted once, even though it's saved on several entries. The context bar uses the size of the latest request against the model's window: 1M for current models, 200K for Claude Haiku 4.5 and older models. To use a different limit, set `CCDECK_CONTEXT_LIMIT`. Tokens are shown rather than dollars, because many people use Claude Code on a subscription and prices differ by model.
 - **Dashboard autostart.** With the plugin, the `SessionStart` hook starts `ccdeck serve` in the background when nothing answers on the port; it logs to `~/.claude/ccdeck/serve.log`. It doesn't do this when the systemd service or launchd agent is installed. To turn it off, set `CCDECK_AUTOSTART=0`.
 - **Notifications** appear when a session moves into *Needs you*, *PRs to look at* or *Finished*. They use `notify-send` on Linux and Notification Center (through `osascript`) on macOS. To turn them off, set `CCDECK_NOTIFY=0`.
+- **Running or closed.** A session counts as running in one of two ways:
+  - **Reported by hooks:** its hooks recorded the Claude process, and that process is still alive with the same start time.
+  - **Guessed:** for sessions no hook has reported on (for example, ones started before you installed the plugin), N `claude` processes in a folder mark that folder's N most recent sessions as open. A `claude --resume <id>` process marks exactly that session.
+
+  The details drawer shows which way it was decided.
+- **Linear, Notion and artifacts.** Links count when you paste them in a prompt, when Claude mentions them, or when a tool creates them. Titles come from the tool results or from the page's URL.
+  - Linear tickets also come from the branch name (Linear's `you/eng-42-title` format), from Linear tool calls, and from plain mentions like "ENG-42".
+  - A branch name or plain mention counts only when its team key has appeared in a real Linear URL somewhere, or is listed in `CCDECK_LINEAR_TEAMS=ENG,OPS`. So "UTF-8" isn't taken for a ticket.
+  - The workspace for links is learned the same way; you can also set it with `CCDECK_LINEAR_WORKSPACE`.
 - **Processes.** On Linux, ccdeck reads `/proc`. On macOS it takes one `ps` snapshot per refresh and uses `lsof` for working folders. A process's start time is compared too, so a reused pid isn't mistaken for a live session.
 
 ## Limits

@@ -36,9 +36,9 @@ import time
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
-VERSION = "0.4.1"
+VERSION = "0.4.2"
 HOME = Path.home()
 CLAUDE_DIR = Path(os.environ.get("CLAUDE_CONFIG_DIR", HOME / ".claude"))
 PROJECTS_DIR = CLAUDE_DIR / "projects"
@@ -63,7 +63,7 @@ GH_INSTALL = "brew install gh" if IS_MAC else "sudo apt install gh"
 PLIST_FILE = HOME / "Library" / "LaunchAgents" / f"{LAUNCHD_LABEL}.plist"
 DESKTOP_FILE = HOME / ".local" / "share" / "applications" / "ccdeck.desktop"
 DEFAULT_PORT = int(os.environ.get("CCDECK_PORT", "7799"))
-CACHE_VERSION = 6
+CACHE_VERSION = 7
 DEFAULT_DAYS = 14
 QUIET_AFTER = 15 * 60  # "working" with no activity for this long => probably interrupted
 HOOK_EVENTS = ["SessionStart", "UserPromptSubmit", "PostToolUse", "PostToolUseFailure", "Notification",
@@ -331,13 +331,43 @@ def _running_claude_ps():
 # ----------------------------------------------------------------- transcripts
 
 PR_RE = re.compile(r"https://github\.com/[\w.-]+/[\w.-]+/pull/\d+")
-LINK_RES = [
+REF_RES = [  # links shown on a session (Linear issues are handled on their own below)
     ("artifact", re.compile(r"https://claude\.ai/(?:code/)?artifacts?/[\w-]+")),
-    ("notion", re.compile(r"https://(?:www\.)?notion\.so/[\w/?=&%-]+")),
-    ("linear", re.compile(r"https://linear\.app/[\w-]+/issue/[A-Z]+-\d+")),
-    ("figma", re.compile(r"https://(?:www\.)?figma\.com/(?:design|file|board|slides)/[\w/-]+")),
+    ("notion", re.compile(r"https://(?:www\.|app\.)?notion\.(?:so|site|com)/[\w./?=&%#-]+")),
+    ("figma", re.compile(r"https://(?:www\.)?figma\.com/(?:design|file|board|slides|make)/[\w/-]+")),
     ("gdoc", re.compile(r"https://docs\.google\.com/[\w/.-]+")),
 ]
+LINEAR_URL_RE = re.compile(r"https://linear\.app/([\w-]+)/issue/([A-Za-z][A-Za-z0-9]{0,9}-\d{1,7})(?:/([\w%-]+))?")
+ISSUE_KEY_RE = re.compile(r"(?<![\w/.-])([A-Z][A-Z0-9]{1,9})-(\d{1,7})(?![\w-])")
+BRANCH_KEY_RE = re.compile(r"(?:^|[/_])([A-Za-z][A-Za-z0-9]{1,9})-(\d{1,7})(?=$|[-_/])")
+SOURCE_RANK = {"created": 3, "you": 2, "claude": 1, "tool": 0}  # how a link entered the session
+
+
+def slug_title(slug):
+    words = re.sub(r"[-_]+", " ", unquote(slug or "")).strip()
+    return (words[:1].upper() + words[1:])[:120] if words else None
+
+
+def notion_title(url):
+    last = urlparse(url).path.rstrip("/").split("/")[-1]
+    m = re.match(r"(.+)-([0-9a-f]{32})$", last)
+    return slug_title(m.group(1)) if m else None
+
+
+def json_objects(text):
+    """Every dict inside a JSON tool result (results are often JSON text)."""
+    try:
+        root = json.loads(text)
+    except (ValueError, TypeError):
+        return
+    stack = [root]
+    while stack:
+        x = stack.pop()
+        if isinstance(x, dict):
+            yield x
+            stack.extend(x.values())
+        elif isinstance(x, list):
+            stack.extend(x)
 WRITE_TOOLS = {"Write", "Edit", "MultiEdit", "NotebookEdit"}
 CREATING_TOOL_HINTS = ("create", "publish", "Artifact", "save_", "push", "Bash:create")
 DECISION_RE = re.compile(
@@ -477,17 +507,58 @@ def parse_transcript(path):
         "summary": None, "first_prompt": None, "last_prompt": None, "prompts": 0,
         "first_ts": 0.0, "last_ts": 0.0, "last_role": None, "last_text": "",
         "api_error": False, "pending_tool": None, "pending_input": None, "prs": [], "links": {}, "files": [],
-        "usage": empty_usage(), "context": 0, "model": None,
+        "refs": [], "linear": {}, "issue_keys": [], "usage": empty_usage(), "context": 0, "model": None,
     }
-    prs, files, links, tool_names, pending, pending_inputs = {}, {}, {}, {}, {}, {}
+    prs, files, tool_names, pending, pending_inputs = {}, {}, {}, {}, {}
+    refs, linear, keys, tool_titles = {}, {}, {}, {}
     seen_msgs = set()
 
-    def add_links(text):
-        for m in PR_RE.findall(text):
-            prs.setdefault(m, None)
-        for kind, rx in LINK_RES:
+    def note_ref(url, kind, title, source):
+        r = refs.get(url)
+        if r is None:
+            refs[url] = {"url": url, "kind": kind, "title": title or (notion_title(url) if kind == "notion" else None),
+                         "source": source}
+            return
+        if title and not r["title"]:
+            r["title"] = title
+        if SOURCE_RANK[source] > SOURCE_RANK[r["source"]]:
+            r["source"] = source
+
+    def note_issue(key, url, title, source):
+        key = key.upper()
+        r = linear.setdefault(key, {"key": key, "url": None, "title": None, "source": source})
+        r["url"] = r["url"] or url
+        r["title"] = r["title"] or title
+        if SOURCE_RANK[source] > SOURCE_RANK[r["source"]]:
+            r["source"] = source
+
+    def add_refs(text, source, with_prs=False):
+        if not text:
+            return
+        if with_prs:
+            for m in PR_RE.findall(text):
+                prs.setdefault(m, None)
+        for kind, rx in REF_RES:
             for m in rx.findall(text):
-                links.setdefault(kind, {}).setdefault(m.rstrip(").,"), None)
+                note_ref(m.rstrip(").,;:]'\"`"), kind, None, source)
+        for ws, key, slug in LINEAR_URL_RE.findall(text):
+            note_issue(key, f"https://linear.app/{ws}/issue/{key.upper()}", slug_title(slug) if slug else None, source)
+        if source in ("you", "claude"):
+            for a, b in ISSUE_KEY_RE.findall(text):
+                keys.setdefault(f"{a}-{b}", None)
+
+    def add_json_titles(text, source):
+        for o in json_objects(text):
+            url = o.get("url") or o.get("link") or o.get("href")
+            title = o.get("title") or o.get("name")
+            ident = o.get("identifier")
+            title = title if isinstance(title, str) else None
+            if isinstance(ident, str) and ISSUE_KEY_RE.fullmatch(ident.upper()):
+                note_issue(ident, url if isinstance(url, str) and "linear.app" in url else None, title, source)
+            elif isinstance(url, str) and title:
+                for kind, rx in REF_RES:
+                    if rx.match(url):
+                        note_ref(url, kind, title, source)
 
     try:
         f = open(path, encoding="utf-8", errors="replace")
@@ -528,10 +599,19 @@ def parse_transcript(path):
                             tid = b.get("tool_use_id")
                             pending.pop(tid, None)
                             name = tool_names.get(tid, "")
-                            if any(h in name for h in CREATING_TOOL_HINTS):
-                                add_links(block_text(b.get("content")))
+                            body = block_text(b.get("content"))
+                            creating = any(h in name for h in CREATING_TOOL_HINTS)
+                            if creating or "linear" in name.lower():
+                                src = "created" if creating else "tool"
+                                add_refs(body, src, with_prs=creating)
+                                add_json_titles(body, src)
+                                if tid in tool_titles:  # an Artifact publish: title from its own input
+                                    for r in refs.values():
+                                        if r["kind"] == "artifact" and not r["title"] and r["url"] in body:
+                                            r["title"] = tool_titles[tid]
                 if is_real_prompt(e):
                     text = block_text(content)
+                    add_refs(text, "you")
                     info["prompts"] += 1
                     info["first_prompt"] = info["first_prompt"] or text
                     info["last_prompt"] = text
@@ -556,7 +636,7 @@ def parse_transcript(path):
                 if b.get("type") == "text" and b.get("text", "").strip():
                     info["last_role"] = "assistant"
                     info["last_text"] = b["text"]
-                    add_links(b["text"])
+                    add_refs(b["text"], "claude", with_prs=True)
                 elif b.get("type") == "tool_use":
                     name = b.get("name", "")
                     inp = b.get("input") if isinstance(b.get("input"), dict) else {}
@@ -564,6 +644,14 @@ def parse_transcript(path):
                     pending[b.get("id")] = name
                     pending_inputs[b.get("id")] = summarize_tool_input(name, inp)
                     info["last_role"] = "tool"
+                    if "linear" in name.lower():
+                        for v in inp.values():
+                            if isinstance(v, str) and ISSUE_KEY_RE.fullmatch(v.upper()):
+                                note_issue(v, None, None, "tool")
+                    if name == "Artifact" or name.endswith("__create"):
+                        t = inp.get("title") or inp.get("name")
+                        if isinstance(t, str) and t.strip():
+                            tool_titles[b.get("id")] = t.strip()[:120]
                     if name in WRITE_TOOLS:
                         fp = inp.get("file_path") or inp.get("notebook_path")
                         if isinstance(fp, str):
@@ -575,7 +663,16 @@ def parse_transcript(path):
     info["pending_tool"] = list(pending.values())[-1] if pending else None
     info["pending_input"] = pending_inputs.get(list(pending)[-1]) if pending else None
     info["prs"] = list(prs)
-    info["links"] = {k: list(v) for k, v in links.items()}
+    info["refs"] = list(refs.values())
+    info["linear"] = linear
+    info["issue_keys"] = [k for k in keys if k not in linear]
+    links = {}
+    for r in info["refs"]:
+        links.setdefault(r["kind"], []).append(r["url"])
+    for r in linear.values():
+        if r["url"]:
+            links.setdefault("linear", []).append(r["url"])
+    info["links"] = links
     info["files"] = list(files)
     return info
 
@@ -814,6 +911,69 @@ def classify(s, hook, alive):
     return "closed_midtask" if s.get("last_role") in ("user", "tool") else "closed"
 
 
+def guess_live_sessions(sessions, hooks, procs, argv_blob):
+    """Sessions no hook reports on: N claude processes in a folder => its N most recent sessions
+    are taken as open, less the processes hooks or `--resume <id>` already account for."""
+    per_cwd = {}
+    for pid, cwd, argv in procs:
+        if cwd:
+            per_cwd[cwd] = per_cwd.get(cwd, 0) + 1
+    by_cwd = {}
+    for s in sessions.values():
+        if s["cwd"] in per_cwd:
+            by_cwd.setdefault(s["cwd"], []).append(s)
+    live = set()
+    for cwd, ss in by_cwd.items():
+        n = per_cwd[cwd]
+        for s in ss:  # processes already explained
+            h = hooks.get(s["id"])
+            if (h and h.get("pid") and pid_alive(h["pid"], h.get("pid_start"))) or s["id"] in argv_blob:
+                n -= 1
+        rest = sorted((s for s in ss if not (hooks.get(s["id"]) or {}).get("pid") and s["id"] not in argv_blob),
+                      key=lambda s: -s["last_ts"])
+        live.update(s["id"] for s in rest[:max(0, n)])
+    return live
+
+
+def resolve_linear(sessions):
+    """Turn each session's Linear evidence into a list of issues.
+
+    Team keys and the workspace are learned from every Linear URL or Linear tool result seen in
+    any session (plus CCDECK_LINEAR_TEAMS / CCDECK_LINEAR_WORKSPACE). A key that only appears in a
+    branch name or in plain text ("ENG-42") counts when its team is one of those, so "UTF-8" is not
+    taken for an issue."""
+    teams = {t.strip().upper() for t in os.environ.get("CCDECK_LINEAR_TEAMS", "").split(",") if t.strip()}
+    workspaces = {}
+    for s in sessions.values():
+        for r in (s.get("linear") or {}).values():
+            teams.add(r["key"].split("-")[0])
+            m = LINEAR_URL_RE.match(r.get("url") or "")
+            if m:
+                workspaces[m.group(1)] = workspaces.get(m.group(1), 0) + 1
+    ws = os.environ.get("CCDECK_LINEAR_WORKSPACE") or (max(workspaces, key=workspaces.get) if workspaces else None)
+    for s in sessions.values():
+        found = {k: dict(v) for k, v in (s.get("linear") or {}).items()}
+        primary = None
+        for a, b in BRANCH_KEY_RE.findall(s.get("branch") or ""):
+            key = f"{a.upper()}-{b}"
+            if a.upper() in teams:
+                primary = primary or key
+                found.setdefault(key, {"key": key, "url": None, "title": None, "source": "branch"})
+        for key in s.get("issue_keys") or []:
+            if key.split("-")[0] in teams:
+                found.setdefault(key, {"key": key, "url": None, "title": None, "source": "claude"})
+        out = []
+        for key, r in found.items():
+            r["url"] = r["url"] or (f"https://linear.app/{ws}/issue/{key}" if ws else None)
+            r["primary"] = key == primary
+            out.append(r)
+        rank = {"branch": 4, "created": 3, "you": 2, "tool": 1, "claude": 0}
+        out.sort(key=lambda r: (not r["primary"], -rank.get(r["source"], 0), r["key"]))
+        if out and not primary:
+            out[0]["primary"] = True
+        s["linear_list"] = out
+
+
 def title_of(s):
     return (s.get("title") or s.get("ai_title") or s.get("summary")
             or one_line(s.get("first_prompt"), 90) or "(untitled)")
@@ -826,16 +986,10 @@ def collect(include_all=False, days=DEFAULT_DAYS):
     procs = running_claude_processes()
     prc = pr_cache()
 
-    live_cwds = {cwd for _, cwd, _ in procs if cwd}
     argv_blob = " ".join(" ".join(a) for _, _, a in procs)
-    newest_by_cwd = {}
-    for s in sessions.values():
-        if s["cwd"] in live_cwds and s["id"] not in hooks:
-            cur = newest_by_cwd.get(s["cwd"])
-            if not cur or s["last_ts"] > cur["last_ts"]:
-                newest_by_cwd[s["cwd"]] = s
-    guessed_live = {s["id"] for s in newest_by_cwd.values()}
+    guessed_live = guess_live_sessions(sessions, hooks, procs, argv_blob)
 
+    resolve_linear(sessions)
     rows, cutoff = [], time.time() - days * 86400
     for sid, s in sessions.items():
         hook = hooks.get(sid)
@@ -1015,6 +1169,8 @@ def session_json(s):
     d = {k: s.get(k) for k in keep}
     d["last_text"] = (s.get("last_text") or "")[-4000:]
     d["last_prompt"] = (s.get("last_prompt") or "")[-1500:]
+    d["refs"] = s.get("refs") or []
+    d["linear"] = s.get("linear_list") or []
     d["usage"] = s.get("usage") or empty_usage()
     d["sub_usage"] = s.get("sub_usage") or empty_usage()
     d["context"] = s.get("context") or 0
@@ -1358,11 +1514,16 @@ def cmd_show(args):
                     print(dim(f"    {p['title']}"))
             else:
                 print(f"  {p['url']}" + (dim(f"  ({p['error']})") if p.get("error") else ""))
-    if s["links"]:
+    src_label = {"created": "created", "you": "you shared", "claude": "mentioned", "tool": "looked up", "branch": "branch"}
+    if s.get("linear_list"):
+        print(bold("\nLinear"))
+        for r in s["linear_list"]:
+            print(f"  {r['key']:<10}{one_line(r.get('title') or '', 60):<62}{dim(src_label.get(r['source'], ''))}"
+                  + (f"\n            {r['url']}" if r.get("url") else ""))
+    if s.get("refs"):
         print(bold("\nLinks"))
-        for kind, urls in s["links"].items():
-            for u in urls:
-                print(f"  {kind:<9}{u}")
+        for r in s["refs"]:
+            print(f"  {r['kind']:<9}{one_line(r.get('title') or '', 50):<52}{dim(src_label.get(r['source'], ''))}\n           {r['url']}")
     if s["files"]:
         print(bold("\nFiles written/edited"))
         for fp in s["files"][-15:]:
