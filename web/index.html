@@ -88,21 +88,25 @@ const PAGE_VERSION = "__CC_VERSION__";
 const SVGNS = "http://www.w3.org/2000/svg";
 
 // ---- states and groups, as in the design ----
+// Groups say what you have to do: answer Claude, fix a PR, take your turn, or nothing
+// (Claude, CI or reviewers are on it), or nothing for now (set aside). Keys reuse the design's colours.
 const ST = {
   perm: { l: "Permission needed", i: "lock", g: "need", d: "A tool call is waiting for your approval" },
   question: { l: "Question for you", i: "question", g: "need", d: "Claude asked you something" },
   plan: { l: "Plan to approve", i: "plan", g: "need", d: "Plan mode finished; approve or edit it" },
   decision: { l: "Decision needed", i: "decision", g: "need", d: "Claude laid out options to choose from" },
   error: { l: "Error", i: "error", g: "need", d: "An API or tool error stopped the session" },
-  cifail: { l: "CI failing", i: "x-circle", g: "pr", d: "At least one check failed on its PR" },
+  cifail: { l: "CI failing", i: "x-circle", g: "pr", d: "A check failed on the session's PR" },
   changes: { l: "Changes requested", i: "changes", g: "pr", d: "A reviewer asked for changes" },
   conflict: { l: "PR has conflicts", i: "conflict", g: "pr", d: "The branch cannot merge cleanly" },
-  review: { l: "PR ready for review", i: "pr", g: "pr", d: "Checks green, waiting for review" },
-  working: { l: "Working", i: "spinner", g: "work", d: "Generating or running tools" },
-  cirun: { l: "CI running", i: "clock", g: "wait", d: "Checks are running on its PR" },
-  parked: { l: "Parked", i: "pause", g: "wait", d: "You parked it; it stays out of the way" },
+  approved: { l: "PR approved, merge it", i: "check", g: "turn", d: "Approved and green; it's yours to merge" },
+  draft: { l: "Draft PR, review it", i: "draft", g: "turn", d: "Look over the draft, then mark it ready" },
   finished: { l: "Finished, your turn", i: "reply", g: "turn", d: "Claude ended its turn" },
   quiet: { l: "Quiet, interrupted?", i: "moon", g: "turn", d: "Process alive but silent for 15+ min" },
+  working: { l: "Working", i: "spinner", g: "work", d: "Generating or running tools" },
+  cirun: { l: "CI running", i: "clock", g: "work", d: "Checks are running on its PR" },
+  review: { l: "Waiting for review", i: "pr", g: "work", d: "Ready for review; waiting on reviewers" },
+  parked: { l: "Parked", i: "pause", g: "closed", d: "You set it aside" },
   closed: { l: "Closed", i: "stop", g: "closed", d: "Process exited after finishing" },
   midtask: { l: "Closed mid-task", i: "slash", g: "closed", d: "Process exited while it was working" },
   merged: { l: "PR merged", i: "merge", g: "done", d: "Its PR was merged" },
@@ -110,17 +114,16 @@ const ST = {
 };
 const SMAP = {
   permission: "perm", question: "question", plan: "plan", decision: "decision", error: "error",
-  ci_failing: "cifail", changes_requested: "changes", pr_conflict: "conflict", pr_review: "review",
-  working: "working", ci_pending: "cirun", parked: "parked", idle: "finished", quiet: "quiet",
-  closed_midtask: "midtask", closed: "closed", pr_merged: "merged", done: "done",
+  ci_failing: "cifail", changes_requested: "changes", pr_conflict: "conflict", pr_approved: "approved", pr_draft: "draft",
+  idle: "finished", quiet: "quiet", working: "working", ci_pending: "cirun", pr_review: "review",
+  parked: "parked", closed_midtask: "midtask", closed: "closed", pr_merged: "merged", done: "done",
 };
 const GR = [
   { k: "need", l: "Needs you", i: "bell", layout: "focus", hint: "Oldest first" },
-  { k: "pr", l: "PRs to look at", i: "pr", layout: "cards", hint: "From gh, refreshed every 3 min" },
-  { k: "work", l: "Working", i: "spinner", layout: "rows", hint: "" },
-  { k: "wait", l: "Waiting", i: "clock", layout: "rows", hint: "CI or parked" },
-  { k: "turn", l: "Your turn", i: "reply", layout: "rows", hint: "Finished or gone quiet" },
-  { k: "closed", l: "Closed, not done", i: "stop", layout: "dense", hint: "Last 24 h" },
+  { k: "pr", l: "PRs to fix", i: "pr", layout: "cards", hint: "Failing checks, change requests, conflicts" },
+  { k: "turn", l: "Your turn", i: "reply", layout: "rows", hint: "Finished, draft PRs, approved PRs" },
+  { k: "work", l: "In progress", i: "clock", layout: "rows", hint: "Claude, CI or reviewers are on it" },
+  { k: "closed", l: "Set aside", i: "pause", layout: "dense", hint: "Parked, or closed in the last 24 h" },
   { k: "done", l: "Done", i: "check-circle", layout: "dense", hint: "" },
 ];
 const OLD_AFTER = 24 * 3600;
@@ -392,7 +395,7 @@ function matches(s, q) {
 }
 
 // ---- pieces ----
-const pill = (s, extra) => h("span", { class: "pill", "data-g": s.g, style: extra }, ic(s.icon), s.stateLabel);
+const pill = (s, extra) => h("span", { class: "pill", "data-g": s.g, "data-k": s.k, style: extra }, ic(s.icon), s.stateLabel);
 const run = (s) => h("span", { class: "run", "data-on": s.run ? "on" : "off" }, h("span", { class: "run-dot" }), s.run ? "Running" : "Not running");
 const ctx = (s) => h("span", { class: "ctx", "data-lvl": s.lvl, title: s.ctxTitle, tabindex: "0", "aria-label": s.ctxTitle },
   h("span", { class: "ctx-bar" }, h("span", { class: "ctx-fill", style: "width: " + s.pct + "%" })), h("span", { class: "ctx-num" }, s.ctxLabel));
@@ -475,7 +478,7 @@ function card(s) {
       h("span", { class: "grow" }), h("button", { class: "btn btn-ghost btn-sm", onclick: () => openDrawer(s.id) }, "Details"), menuBtn(s, true)));
 }
 function row(s) {
-  return h("div", { class: "row clickable", role: "listitem", "data-g": s.g, "data-sid": s.id, onclick: openOnClick(s.id) },
+  return h("div", { class: "row clickable", role: "listitem", "data-g": s.g, "data-k": s.k, "data-sid": s.id, onclick: openOnClick(s.id) },
     pill(s),
     h("div", { class: "row-main" }, titleBtn(s), h("span", { class: "row-reason", title: s.reason }, s.reason)),
     h("span", { class: "row-loc", title: s.cwd }, s.project, " ", h("span", {}, "/"), " ", s.branch),
@@ -558,9 +561,9 @@ function renderLegend() {
 // Session contours: at most 10 lines, shared out by state in proportion (largest remainder,
 // every present state gets one); fixed bands: needs you, PRs, working, waiting, the rest.
 function renderContours(all, stale) {
-  const lineGroup = { need: "need", pr: "pr", work: "work", wait: "wait", turn: "turn", closed: "turn", done: "turn" };
-  const order = ["need", "pr", "work", "wait", "turn"];
-  const names = { need: "need you", pr: "PRs to look at", work: "working", wait: "waiting", turn: "finished or done" };
+  const lineGroup = { need: "need", pr: "pr", turn: "turn", work: "work", closed: "done", done: "done" };
+  const order = ["need", "pr", "turn", "work", "done"];
+  const names = { need: "need you", pr: "PRs to fix", turn: "your turn", work: "in progress", done: "set aside or done" };
   const counts = {};
   all.forEach((s) => { const k = lineGroup[s.g]; counts[k] = (counts[k] || 0) + 1; });
   const present = order.filter((k) => counts[k]);
@@ -611,10 +614,11 @@ function render() {
   const q = ui.q.trim();
   const count = (k) => all.filter((s) => s.g === k).length;
   const needN = count("need"), prN = count("pr"), doneN = count("done");
-  const oldClosed = all.filter((s) => s.g === "closed" && now - s.ts > OLD_AFTER).length;
+  const isOld = (s) => s.g === "closed" && s.k !== "parked" && now - s.ts > OLD_AFTER;
+  const oldClosed = all.filter(isOld).length;
 
   document.title = (needN ? `(${needN}) ` : "") + "ccdeck";
-  setFavicon(needN, needN ? "#E9887D" : prN ? "#C393C2" : count("work") ? "#F0B44C" : "#10b981");
+  setFavicon(needN, needN ? "#E9887D" : prN ? "#C393C2" : count("turn") ? "#10b981" : count("work") ? "#F0B44C" : "#10b981");
   $("needBadge").hidden = !needN || isOff; $("needBadge").textContent = needN;
   $("host").textContent = "localhost:" + data.port + " · v" + data.version;
   $("cDone").textContent = doneN; $("tDone").setAttribute("aria-pressed", ui.showDone ? "true" : "false");
@@ -624,7 +628,7 @@ function render() {
   const visibleGroup = (k) => isOff ? k === "need" : ui.filter === "all" ? (k !== "done" || ui.showDone) : ui.filter === k;
   const groups = GR.filter((g) => visibleGroup(g.k)).map((g) => {
     let items = all.filter((s) => s.g === g.k && matches(s, q));
-    if (g.k === "closed" && !ui.showOld) items = items.filter((s) => now - s.ts <= OLD_AFTER);
+    if (g.k === "closed" && !ui.showOld) items = items.filter((s) => !isOld(s));
     items.sort((a, b) => g.k === "need" ? a.ts - b.ts : b.ts - a.ts);
     return Object.assign({}, g, { items });
   }).filter((g) => g.items.length);
@@ -654,16 +658,18 @@ function render() {
       h("p", {}, "ccdeck lists every session under ", h("span", { class: "mono" }, "~/.claude/projects"), ". Start one in any terminal and it shows up here within 2 seconds."),
       h("div", { class: "cmd", style: "width: 100%; max-width: 360px; text-align: left" }, h("span", {}, "claude"), h("button", { class: "btn btn-sm", onclick: () => copy("claude", "Command") }, "Copy")),
       !data.hooks ? h("p", { style: "font-size: 13px; color: var(--text-3)" }, "For exact live states, also install the plugin: ", h("span", { class: "mono" }, "/plugin install ccdeck --marketplace slonik923/ccdeck")) : null));
-  } else if (!isOff && !needN && !prN && !q && ui.filter === "all") {
-    const workN = count("work"), waitN = count("wait");
+  } else if (!isOff && !needN && !prN && !count("turn") && !q && ui.filter === "all") {
+    const workN = count("work");
     out.push(h("div", { class: "calm", role: "status" }, calmArt(), h("div", {}, h("h2", {}, "Nothing needs you"),
-      h("p", {}, workN + waitN === 0 ? "Everything is done. Nothing is running, and finished sessions are under Done whenever you want them."
-        : workN + " working and " + waitN + " waiting. When a session needs you, it lands at the top of this page and the tab title shows a count."))));
+      h("p", {}, workN === 0 ? "Everything is done. Nothing is running, and finished sessions are under Done whenever you want them."
+        : workN + " in progress: Claude, CI or reviewers are on it. When a session needs you, it lands at the top of this page and the tab title shows a count."))));
   }
   if (isOff) out.push(h("div", { class: "section", style: "padding-top: 24px; padding-bottom: 0" },
     h("span", { class: "stale-tag" }, ic("clock", "i-sm"), "Last known state, " + agoText(Math.round(Date.now() / 1000 - lastOk / 1000)) + ". Actions are paused until the server is back.")));
 
+  const reviews = (data.reviews || []).filter((r) => !q || (r.repo + " " + r.title + " " + r.author).toLowerCase().includes(q.toLowerCase()));
   for (const g of groups) {
+    if (g.k === "work" && !isOff && ui.filter === "all" && reviews.length) out.push(reviewSection(reviews));
     const strong = g.k === "need";
     let body;
     if (g.layout === "focus") body = focusPanel(g.items);
@@ -678,6 +684,7 @@ function render() {
       h("div", { class: isOff ? "stale" : "" }, body),
       isOff ? staleMore(all) : null));
   }
+  if (!isOff && ui.filter === "all" && reviews.length && !groups.some((g) => g.k === "work")) out.push(reviewSection(reviews));
   if (q && !listed && all.length) out.push(h("div", { class: "empty", style: "padding-top: 48px" }, h("h2", {}, "No sessions match “" + q + "”"),
     h("p", {}, "Filters look at title, project, branch and note."), h("button", { class: "btn", onclick: () => { $("q").value = ""; ui.q = ""; render(); } }, "Clear filter")));
   if (!isOff && ui.filter === "all" && !ui.showDone && doneN) out.push(h("div", { class: "more-line", style: "margin-top: 32px" }, ic("check-circle", "i-sm"),
@@ -690,6 +697,18 @@ function render() {
   $("main").replaceChildren(...out);
   renderDrawer(all);
   if (keep) focusKey(keep);
+}
+// PRs that ask for your review. They belong to colleagues, not to a session, so they get their own list.
+function reviewSection(items) {
+  return h("section", { class: "section", "data-g": "wait", "aria-labelledby": "h-reviews" },
+    h("div", { class: "ghdr" }, h("h2", { id: "h-reviews" }, h("span", { class: "gicon" }, ic("pr")), "Review requests ", h("span", { class: "gcount" }, items.length)),
+      h("span", { class: "rule" }), h("span", { class: "ghint" }, "Colleagues' PRs waiting for your review · from gh")),
+    h("ul", { class: "rrlist", "data-g": "wait" }, items.map((r) => h("li", {},
+      h("a", { class: "prchip", "data-k": r.draft ? "draft" : "ready", href: r.url, target: "_blank", rel: "noopener noreferrer" },
+        ic(r.draft ? "draft" : "pr"), h("span", { class: "num" }, "#" + r.number), r.draft ? "Draft" : "Review"),
+      h("a", { class: "rr-title", href: r.url, target: "_blank", rel: "noopener noreferrer", title: r.title }, r.title),
+      h("span", { class: "rr-repo mono" }, r.repo), h("span", { class: "rr-by" }, r.author ? "by " + r.author : ""),
+      h("span", { class: "ago" }, agoShort(r.updated))))));
 }
 function staleMore(all) {
   const parts = GR.filter((g) => g.k !== "need" && g.k !== "done").map((g) => [all.filter((s) => s.g === g.k).length, g.l.toLowerCase()]).filter((x) => x[0]);

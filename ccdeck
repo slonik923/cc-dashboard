@@ -38,7 +38,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
-VERSION = "0.4.4"
+VERSION = "0.5.0"
 HOME = Path.home()
 CLAUDE_DIR = Path(os.environ.get("CLAUDE_CONFIG_DIR", HOME / ".claude"))
 PROJECTS_DIR = CLAUDE_DIR / "projects"
@@ -48,6 +48,7 @@ STATE_DIR = DATA_DIR / "state"
 MARKS_FILE = DATA_DIR / "marks.json"
 CACHE_FILE = DATA_DIR / "index-cache.json"
 PR_CACHE_FILE = DATA_DIR / "prs.json"
+REVIEWS_FILE = DATA_DIR / "reviews.json"  # open PRs that ask you for a review
 LAST_LIST_FILE = DATA_DIR / "last-list.json"
 TOKEN_FILE = DATA_DIR / "token"
 DAEMON_FILE = DATA_DIR / "daemon.json"
@@ -72,13 +73,14 @@ HOOK_TIMEOUTS = {"PermissionRequest": 1800}  # seconds; the hook may wait this l
 
 # ------------------------------------------------------------------ states
 # key: (group, label). Groups are shown in this order.
+# Groups answer "what do I have to do?": answer Claude, fix a PR, take your turn, or nothing
+# (someone else is on it: Claude, CI or reviewers), or nothing for now (set aside).
 GROUPS = [
     ("needs", "Needs you"),
-    ("review", "PRs to look at"),
-    ("working", "Working"),
-    ("waiting", "Waiting"),
+    ("fix", "PRs to fix"),
     ("yours", "Your turn"),
-    ("closed", "Closed, not done"),
+    ("waiting", "In progress"),
+    ("later", "Set aside"),
     ("done", "Done"),
 ]
 STATES = {
@@ -87,29 +89,31 @@ STATES = {
     "plan": ("needs", "Plan to approve"),
     "decision": ("needs", "Decision needed"),
     "error": ("needs", "Error"),
-    "ci_failing": ("review", "CI failing"),
-    "changes_requested": ("review", "Changes requested"),
-    "pr_conflict": ("review", "PR has conflicts"),
-    "pr_review": ("review", "PR ready for review"),
-    "working": ("working", "Working"),
-    "ci_pending": ("waiting", "CI running"),
-    "parked": ("waiting", "Parked"),
+    "ci_failing": ("fix", "CI failing"),
+    "changes_requested": ("fix", "Changes requested"),
+    "pr_conflict": ("fix", "PR has conflicts"),
+    "pr_approved": ("yours", "PR approved, merge it"),
+    "pr_draft": ("yours", "Draft PR, review it"),
     "idle": ("yours", "Finished, your turn"),
     "quiet": ("yours", "Quiet, interrupted?"),
-    "closed_midtask": ("closed", "Closed mid-task"),
-    "closed": ("closed", "Closed"),
+    "working": ("waiting", "Working"),
+    "ci_pending": ("waiting", "CI running"),
+    "pr_review": ("waiting", "Waiting for review"),
+    "parked": ("later", "Parked"),
+    "closed_midtask": ("later", "Closed mid-task"),
+    "closed": ("later", "Closed"),
     "pr_merged": ("done", "PR merged"),
     "done": ("done", "Done"),
 }
 GROUP_ORDER = {g: i for i, (g, _) in enumerate(GROUPS)}
 NOTIFY_STATES = {"permission", "question", "plan", "decision", "error",
-                 "ci_failing", "changes_requested", "pr_conflict", "pr_review", "idle"}
+                 "ci_failing", "changes_requested", "pr_conflict", "pr_approved", "pr_draft", "idle"}
 
 # --------------------------------------------------------------------------- utils
 
 USE_COLOR = sys.stdout.isatty() and os.environ.get("NO_COLOR") is None
-ANSI = {"needs": "1;31", "review": "1;35", "working": "1;33", "waiting": "1;34",
-        "yours": "1;32", "closed": "1;90", "done": "2"}
+ANSI = {"needs": "1;31", "fix": "1;35", "yours": "1;32", "waiting": "1;33",
+        "later": "1;90", "done": "2", "reviews": "1;34"}
 
 
 def c(text, code):
@@ -799,6 +803,43 @@ def fetch_pr(url):
     }
 
 
+def fetch_review_requests():
+    """Open PRs where your review is requested. They aren't tied to a session, so the dashboard
+    lists them on their own. Off with CCDECK_REVIEW_REQUESTS=0."""
+    if os.environ.get("CCDECK_REVIEW_REQUESTS") == "0" or not shutil.which("gh"):
+        return None
+    try:
+        r = subprocess.run(["gh", "search", "prs", "--review-requested=@me", "--state=open", "--limit", "30",
+                            "--json", "number,title,url,repository,author,isDraft,updatedAt"],
+                           capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if r.returncode != 0:
+        return None
+    try:
+        items = json.loads(r.stdout)
+    except ValueError:
+        return None
+    out = []
+    for d in items if isinstance(items, list) else []:
+        if not isinstance(d, dict) or not isinstance(d.get("url"), str):
+            continue
+        repo, author = d.get("repository") or {}, d.get("author") or {}
+        out.append({"url": d["url"], "number": d.get("number"), "title": d.get("title") or "",
+                    "repo": repo.get("nameWithOwner") or repo.get("name") or "",
+                    "author": author.get("login") or "", "draft": bool(d.get("isDraft")),
+                    "updated": parse_ts(d.get("updatedAt")) or 0})
+    out.sort(key=lambda x: -x["updated"])
+    return out
+
+
+def review_requests(sessions):
+    """Cached review requests, less PRs that one of your sessions made."""
+    own = {p["url"] for s in sessions for p in s.get("pr_details") or [] if p.get("own")}
+    items = (load_json(REVIEWS_FILE, {}) or {}).get("items") or []
+    return [r for r in items if r.get("url") not in own]
+
+
 def pr_cache():
     with _pr_lock:
         return load_json(PR_CACHE_FILE, {})
@@ -880,7 +921,11 @@ def pr_state(prs):
             return "pr_conflict"
         if any(p.get("checks") == "pending" for p in open_prs):
             return "ci_pending"
-        return "pr_review"
+        if any(p.get("draft") for p in open_prs):
+            return "pr_draft"  # yours to review before anyone else does
+        if all(p.get("review") == "approved" for p in open_prs):
+            return "pr_approved"
+        return "pr_review"  # waiting on reviewers
     if any(p["state"] == "merged" for p in known):
         return "pr_merged"
     return None
@@ -1033,7 +1078,7 @@ def collect(include_all=False, days=DEFAULT_DAYS):
         if not include_all:
             if s["group"] == "done":
                 continue
-            if s["group"] == "closed" and s["last_ts"] < cutoff:
+            if st in ("closed", "closed_midtask") and s["last_ts"] < cutoff:
                 continue
         rows.append(s)
     rows.sort(key=lambda r: (GROUP_ORDER[r["group"]], -r["last_ts"]))
@@ -1243,6 +1288,7 @@ class Dashboard:
             "states": {k: {"group": g, "label": l} for k, (g, l) in STATES.items()},
             "gh": bool(shutil.which("gh")), "hooks": hooks_active(),
             "default_days": DEFAULT_DAYS, "port": self.port, "gh_install": GH_INSTALL,
+            "reviews": review_requests(sessions),
         }
         etag = hashlib.sha1(json.dumps(snap, sort_keys=True).encode()).hexdigest()[:16]
         snap["generated"] = time.time()
@@ -1298,7 +1344,19 @@ class Dashboard:
         os.execv(sys.executable, [sys.executable, target[1], "serve", "--port", str(self.port)])
 
     def pr_loop(self):
+        last_reviews = 0
         while True:
+            if time.time() - last_reviews > 300:
+                last_reviews = time.time()
+                try:
+                    items = fetch_review_requests()
+                    if items is not None:
+                        old = (load_json(REVIEWS_FILE, {}) or {}).get("items")
+                        save_json(REVIEWS_FILE, {"fetched": time.time(), "items": items})
+                        if items != old:
+                            self.wake.set()
+                except Exception as e:
+                    print(f"review requests error: {e!r}", file=sys.stderr)
             try:
                 with self.lock:
                     sessions = self.snapshot["sessions"]
@@ -1551,6 +1609,12 @@ def cmd_list(args):
         print("No sessions. (Use -a to include done and older ones.)")
     else:
         sys.stdout.write(format_rows(rows, width, numbered))
+    reviews = review_requests(rows)
+    if reviews:
+        print("\n" + c("REVIEW REQUESTS FOR YOU", ANSI["reviews"]) + "\n")
+        for r in reviews[:10]:
+            print(f"  {r['repo']}#{r['number']}  {one_line(r['title'], max(20, width - 40))}"
+                  + dim(f"  by {r['author']}" + (" (draft)" if r["draft"] else "")))
     try:
         save_json(LAST_LIST_FILE, numbered)
     except OSError:

@@ -420,7 +420,7 @@
 .ccd .pill-strong { background: var(--g); border-color: var(--g); color: var(--surface); }
 .ccd .pill-strong .i { color: currentColor; }
 .ccd[data-theme="dark"] .pill-strong { color: #0D0F13; }
-.ccd .pill[data-g="work"] .i { animation: ccd-spin var(--dur-work) linear infinite; }
+.ccd .pill[data-k="working"] .i { animation: ccd-spin var(--dur-work) linear infinite; }
 
 /* run indicator (process alive) */
 .ccd .run { display: inline-flex; align-items: center; gap: 5px; font-size: var(--t-12); color: var(--text-3); white-space: nowrap; }
@@ -513,7 +513,7 @@
 .ccd .row .resume { border-color: transparent; background: none; color: var(--text-2); }
 .ccd .row:hover .resume, .ccd .row:focus-within .resume, .ccd .row.is-hover .resume { border-color: var(--border-strong); background: var(--surface); color: var(--text); }
 .ccd .row.is-hover { background: var(--surface-2); }
-.ccd .rows[data-g="work"] .row::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 2px; background: linear-gradient(90deg, transparent 0 35%, var(--work) 50%, transparent 65% 100%); background-size: 300% 100%; animation: ccd-sweep 2.4s linear infinite; opacity: .8; }
+.ccd .rows[data-g="work"] .row[data-k="working"]::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 2px; background: linear-gradient(90deg, transparent 0 35%, var(--work) 50%, transparent 65% 100%); background-size: 300% 100%; animation: ccd-sweep 2.4s linear infinite; opacity: .8; }
 .ccd .rows-dense .row { min-height: 44px; padding-top: 4px; padding-bottom: 4px; }
 .ccd .rows-dense .row-main { flex-direction: row; align-items: baseline; gap: var(--s-4); }
 .ccd .rows-dense .title-btn { color: var(--text-2); font-weight: 500; flex: 0 0 auto; max-width: 60%; }
@@ -747,3 +747,13 @@ a.ref-title:hover { text-decoration: underline; }
 .ccd .nf-main .readmore { font-size: 13px; margin-bottom: -4px; }
 .ccd .cutnote { margin: 0; font-size: 12px; color: var(--text-3); }
 .ccd .dsec.related h3 { color: var(--text-3); }
+
+/* Review requests: colleagues' PRs, listed apart from sessions */
+.ccd .rrlist { list-style: none; margin: 0; padding: 0; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--surface); }
+.ccd .rrlist li { display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto 44px; align-items: center; gap: 12px; padding: 9px 14px; font-size: var(--t-13); }
+.ccd .rrlist li + li { border-top: 1px solid var(--border); }
+.ccd .rr-title { color: var(--text); text-decoration: none; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ccd .rr-title:hover { text-decoration: underline; }
+.ccd .rr-repo, .ccd .rr-by { color: var(--text-3); font-size: 12px; white-space: nowrap; }
+.ccd .rrlist .ago { text-align: right; }
+@media (max-width: 640px) { .ccd .rrlist li { grid-template-columns: auto minmax(0, 1fr) 40px; } .ccd .rr-repo, .ccd .rr-by { display: none; } }
