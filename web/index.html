@@ -220,7 +220,7 @@ async function act(id, action, extra) {
     const j = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(j.error || "HTTP " + r.status);
     const msgs = {
-      resume: "Opening a terminal" + (j.terminal ? " (" + j.terminal + ")" : "") + "…", done: "Marked done",
+      resume: j.focused ? "Switched to its " + j.focused + " tab" : "Opening a terminal" + (j.terminal ? " (" + j.terminal + ")" : "") + "…", done: "Marked done",
       undone: "Reopened", park: "Parked", unpark: "Unparked", note: "Note saved",
       open_folder: "Opening the folder…", refresh_prs: "PR states refreshed",
     };
@@ -451,7 +451,8 @@ function menuBtn(s, up, label) {
       onclick: (e) => { e.stopPropagation(); ui.menu = open ? "" : s.id; render(); if (!open) focusKey("mi:" + s.id + ":0"); } }, ic("more", "i-sm")),
     open ? menu(s, up) : null);
 }
-const resumeBtn = (s, cls, label, size) => h("button", { class: cls, "data-key": "r:" + s.id + ":" + (label || ""), onclick: () => act(s.id, "resume") }, ic("terminal", size), label || "Resume");
+const resumeHint = (s) => s.name ? "Go to tab switches to its terminal." : "Resume opens the session in a new terminal window.";
+const resumeBtn = (s, cls, label, size) => h("button", { class: cls, "data-key": "r:" + s.id + ":" + (label || ""), onclick: () => act(s.id, "resume") }, ic("terminal", size), s.name ? "Go to tab" : label || "Resume");
 const copyBtn = (s, big) => big
   ? h("button", { class: "btn" + (big === "lg" ? " btn-lg" : ""), onclick: () => copy(s.resumeCmd, "Resume command") }, ic("copy", big === "lg" ? null : "i-sm"), "Copy command")
   : h("button", { class: "ibtn ibtn-sm", "aria-label": "Copy resume command", title: "Copy resume command", onclick: () => copy(s.resumeCmd, "Resume command") }, ic("copy", "i-sm"));
@@ -759,8 +760,8 @@ function renderDrawer(all) {
   drawerSig = sig;
   const scroll = host.querySelector(".drawer") ? host.querySelector(".drawer").scrollTop : 0;
   const msgHead = s.g === "need" ? s.stateLabel : "Claude’s last message";
-  const hint = s.k === "perm" ? "Approve or deny in the terminal. Resume opens the session in a new terminal window."
-    : s.k === "question" || s.k === "decision" ? "Answer in the terminal. Resume opens the session in a new terminal window."
+  const hint = s.k === "perm" ? "Approve or deny in the terminal. " + resumeHint(s)
+    : s.k === "question" || s.k === "decision" ? "Answer in the terminal. " + resumeHint(s)
     : s.k === "error" ? "Resume and type “continue” to retry from the last step." + (s.pct >= 80 ? " Context is at " + s.pct + "%, so consider /compact first." : "") : "";
   const u = s.u, sub = s.sub, inOf = (x) => (x.input || 0) + (x.cache_write || 0) + (x.cache_read || 0);
   const subUsed = Object.values(sub).some((v) => v);
