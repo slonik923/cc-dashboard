@@ -765,11 +765,20 @@ class PreviewTest(unittest.TestCase):
         sock.close()
         env = dict(os.environ, CCDECK_AUTOSTART="0")
         r = subprocess.run([sys.executable, str(ROOT / "ccdeck"), "preview", str(ROOT), "--port", str(port), "--no-open"],
-                           capture_output=True, text=True, env=env, timeout=30)
+                           capture_output=True, text=True, env=env, timeout=60)
+        log = lambda: (cc.PREVIEW_DIR / "serve.log").read_text() if (cc.PREVIEW_DIR / "serve.log").exists() else ""  # noqa: E731
         try:
-            self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
+            self.assertEqual(r.returncode, 0, r.stderr + r.stdout + log())
             self.assertIn(f"http://localhost:{port}", r.stdout)
             cfg = cc.PREVIEW_DIR / "claude"
+            for _ in range(100):  # "(still starting)" is allowed; wait for it here
+                if (cfg / "ccdeck" / "token").exists():
+                    try:
+                        urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=1).close()
+                        break
+                    except OSError:
+                        pass
+                time.sleep(0.3)
             token = (cfg / "ccdeck" / "token").read_text().strip()
             req = urllib.request.Request(f"http://127.0.0.1:{port}/api/sessions", headers={"X-CC-Token": token, "Host": f"localhost:{port}"})
             snap = json.load(urllib.request.urlopen(req, timeout=5))

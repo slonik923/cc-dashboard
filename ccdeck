@@ -1904,15 +1904,17 @@ def cmd_preview(args):
                                              "label": label, "source": str(src), "started": time.time()})
     import urllib.request
     url = f"http://localhost:{args.port}"
-    for _ in range(50):
+    deadline, up = time.monotonic() + 20, False  # the first scan can take a while (macOS: ps and lsof)
+    while time.monotonic() < deadline:
         if proc.poll() is not None:
             sys.exit(f"The preview stopped right away; see {short_path(PREVIEW_DIR / 'serve.log')}.")
         try:
-            urllib.request.urlopen(url, timeout=1).close()
+            urllib.request.urlopen(url, timeout=0.5).close()
+            up = True
             break
         except OSError:
             time.sleep(0.2)
-    print(f"Preview of {label}: {url}")
+    print(f"Preview of {label}: {url}" + ("" if up else "  (still starting)"))
     print("It reads your real sessions; notes and marks you change there aren't kept. Stop it with: ccdeck preview stop")
     if not args.no_open:
         open_path(url)
