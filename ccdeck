@@ -38,7 +38,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
-VERSION = "0.5.1"
+VERSION = "0.6.0"
 HOME = Path.home()
 CLAUDE_DIR = Path(os.environ.get("CLAUDE_CONFIG_DIR", HOME / ".claude"))
 PROJECTS_DIR = CLAUDE_DIR / "projects"
@@ -990,6 +990,17 @@ def resumed_ids(procs):
     return out
 
 
+def peer_sessions():
+    """Claude Code's own registry (~/.claude/sessions/<pid>.json): session id -> {name, pid} for live processes.
+    The name is what other sessions use to message it (SendMessage / ListAgents)."""
+    out = {}
+    for f in (CLAUDE_DIR / "sessions").glob("*.json"):
+        d = load_json(f, {})
+        if isinstance(d, dict) and d.get("sessionId") and pid_alive(d.get("pid"), d.get("procStart")):
+            out[d["sessionId"]] = {"name": d.get("name"), "pid": d["pid"]}
+    return out
+
+
 def guess_live_sessions(sessions, hooks, procs, resumed):
     """Sessions no hook reports on: N claude processes in a folder => its N most recent sessions
     are taken as open, less the processes hooks or `--resume <id>` already account for."""
@@ -1066,6 +1077,7 @@ def collect(include_all=False, days=DEFAULT_DAYS):
     marks = load_json(MARKS_FILE, {})
     procs = running_claude_processes()
     prc = pr_cache()
+    peers = peer_sessions()
 
     resumed = resumed_ids(procs)
     guessed_live = guess_live_sessions(sessions, hooks, procs, resumed)
@@ -1078,14 +1090,15 @@ def collect(include_all=False, days=DEFAULT_DAYS):
             and hook.get("status") != "ended"
         if hook and hook.get("pid"):
             # a live `--resume <id>` wins: another process sharing the session may have ended it
-            alive = hook_live or sid in resumed
+            alive = hook_live or sid in peers or sid in resumed
             s["live_source"] = "hook"
         else:
-            alive = sid in resumed or sid in guessed_live
+            alive = sid in peers or sid in resumed or sid in guessed_live
             s["live_source"] = "guess"
         if sid in resumed and not hook_live:
             hook = None  # another process resumed it; the ended one's status (ended, permission) isn't the live one's
         s["alive"] = alive
+        s["peer_name"] = (peers.get(sid) or {}).get("name")
         s["mark"] = marks.get(sid) or {}
         s["pr_details"] = pr_details(s, prc)
         st = classify(s, hook, alive)
@@ -1254,7 +1267,7 @@ MSG_LIMIT = 8000  # characters of the last message sent to the page
 def session_json(s):
     keep = ("id", "display_title", "title", "cwd", "branch", "first_ts", "last_ts", "prompts",
             "last_role", "pending_tool", "pending_input", "links", "files", "alive", "live_source",
-            "mark", "pr_details", "state", "group", "label", "hook_message")
+            "mark", "pr_details", "state", "group", "label", "hook_message", "peer_name")
     d = {k: s.get(k) for k in keep}
     d["last_text"] = (s.get("last_text") or "")[-MSG_LIMIT:]
     d["last_text_cut"] = len(s.get("last_text") or "") > MSG_LIMIT

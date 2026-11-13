@@ -383,6 +383,21 @@ class HookTest(unittest.TestCase):
         finally:
             cc.running_claude_processes = saved
 
+    def test_peer_registry_gives_name_and_liveness(self):
+        build_fixtures()
+        reg = cc.CLAUDE_DIR / "sessions"
+        reg.mkdir(parents=True, exist_ok=True)
+        me = os.getpid()
+        (reg / f"{me}.json").write_text(json.dumps({"pid": me, "procStart": cc.proc_start_time(me),
+                                                    "sessionId": "s-closed", "name": "work-2d"}))
+        (reg / "1.json").write_text(json.dumps({"pid": 1, "procStart": "stale", "sessionId": "s-midtask", "name": "old"}))
+        try:
+            rows = by_id(cc.collect(True, 10 ** 6))
+            self.assertEqual((rows["s-closed"]["peer_name"], rows["s-closed"]["alive"]), ("work-2d", True))
+            self.assertIsNone(rows["s-midtask"]["peer_name"])  # reused pid: not that session any more
+        finally:
+            shutil.rmtree(reg)
+
     def test_bad_payloads_ignored(self):
         for p in ([1], "x", {"session_id": "../../etc"}, {}):
             self.run_hook(p)
