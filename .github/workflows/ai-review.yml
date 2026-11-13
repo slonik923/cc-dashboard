@@ -44,12 +44,17 @@ jobs:
               const last = mine.filter((r) => r.state !== "COMMENTED").pop();
               if (last && last.state === "CHANGES_REQUESTED") problems.push(`${name} requests changes.`);
               // CodeRabbit re-reviews every push, so its latest review must cover the head commit.
-              // Merges of the base branch don't count as new code (it doesn't re-review those).
+              // Updates from the base branch don't count as new code: only commits that are new
+              // since that review AND unique to this PR (not on the base branch) do, merges excluded.
               if (login === "coderabbitai[bot]" && !mine.some((r) => r.commit_id === head)) {
                 const reviewed = mine[mine.length - 1].commit_id;
-                const cmp = await github.rest.repos.compareCommitsWithBasehead({ owner, repo, basehead: `${reviewed}...${head}` });
-                const fresh = cmp.data.commits.filter((c) => (c.parents || []).length < 2);
-                if (cmp.data.status === "diverged" || fresh.length) {
+                const base = context.payload.pull_request.base.ref;
+                const compare = (basehead) => github.paginate(github.rest.repos.compareCommitsWithBasehead,
+                  { owner, repo, basehead, per_page: 100 }, (res) => res.data.commits);
+                const sinceReview = await github.rest.repos.compareCommitsWithBasehead({ owner, repo, basehead: `${reviewed}...${head}` });
+                const prOnly = new Set((await compare(`${base}...${head}`)).map((c) => c.sha));
+                const fresh = sinceReview.data.commits.filter((c) => prOnly.has(c.sha) && (c.parents || []).length < 2);
+                if (sinceReview.data.status === "diverged" || fresh.length) {
                   problems.push(`CodeRabbit hasn't reviewed the latest commit${fresh.length > 1 ? "s" : ""} yet. It usually does within a few minutes; ` +
                     "to ask now, comment `@coderabbitai review`.");
                 }
