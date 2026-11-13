@@ -1,0 +1,45 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+# CodeRabbit. Shared review rules are in .gemini/styleguide.md.
+language: en-US
+reviews:
+  profile: chill
+  request_changes_workflow: false
+  high_level_summary: true
+  poem: false
+  review_status: true
+  collapse_walkthrough: true
+  auto_review:
+    enabled: true
+    drafts: true          # most PRs here start as drafts; review them early
+  path_filters:
+    - "!**/*.png"
+  path_instructions:
+    - path: "ccdeck"
+      instructions: |
+        Standard library only, Python 3.9+. `ccdeck hook` must always exit 0 fast and never print
+        output Claude Code would act on (the opt-in PermissionRequest path fails closed). The HTTP
+        server must keep the token, localhost Host check and JSON-only actions. Check both the
+        /proc (Linux) and ps/lsof (macOS) code paths, and quoting of anything passed to a shell or
+        AppleScript.
+    - path: "web/**"
+      instructions: |
+        Transcript text, titles and links are untrusted: build DOM nodes, never innerHTML with data;
+        links must be http(s) with rel="noopener noreferrer". Dark theme only; use the CSS custom
+        properties. Keep keyboard navigation working.
+    - path: "tests/**"
+      instructions: |
+        Tests must use the throwaway HOME and the fake gh; no network, real terminal or real ~/.claude.
+    - path: "scripts/demo_data.py"
+      instructions: |
+        Demo data is published in PR screenshots: it must be invented (no real names, repos, tickets, URLs).
+    - path: "**/*.sh"
+      instructions: |
+        Must run on bash 3.2 (macOS): no associative arrays or other bash 4+ features.
+chat:
+  auto_reply: true
+knowledge_base:
+  code_guidelines:
+    enabled: true
+    filePatterns:
+      - ".gemini/styleguide.md"
+      - "CLAUDE.md"

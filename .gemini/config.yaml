@@ -1,0 +1,12 @@
+# Gemini Code Assist on GitHub. Review rules are in styleguide.md.
+have_fun: false
+code_review:
+  disable: false
+  # Skip low-severity nits; CodeRabbit also reviews, so keep the noise down.
+  comment_severity_threshold: MEDIUM
+  max_review_comments: -1
+  pull_request_opened:
+    help: false
+    summary: false      # CodeRabbit writes the PR summary
+    code_review: true
+ignore_patterns: []
