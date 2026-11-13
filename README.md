@@ -173,7 +173,7 @@ python3 -m unittest discover -s tests -v
 
 The tests run against a throwaway `HOME` with synthetic transcripts and a fake `gh`.
 
-**Screenshots for PRs.** `scripts/demo_data.py` writes a demo `HOME` of made-up sessions. `scripts/pr-shots.sh <spec.json>` runs the base branch and your branch on that data and takes before/after screenshots, with the changes highlighted. `scripts/upload-shots.sh` attaches them to a PR. The repo's `pr-screenshots` skill (`.claude/skills/`) walks Claude Code through it. It needs Node with Playwright.
+**Screenshots for PRs.** `scripts/demo_data.py` writes a demo `HOME` of made-up sessions, so you can run any version of ccdeck on the same data: `HOME=/tmp/demo PATH=/tmp/demo/bin:$PATH python3 ccdeck serve --port 7800`. PRs that change the dashboard show it before and after on that data; `CLAUDE.md` has the details.
 
 **Releasing.** Claude Code updates an installed plugin only when the `version` in `.claude-plugin/plugin.json` changes. Bump it, and `VERSION` in `ccdeck` with it, in every release; CI checks that the two match. Users then get it by running `/plugin marketplace update ccdeck` and updating ccdeck from the `/plugin` menu (or reinstalling it).
 
