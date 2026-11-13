@@ -1,0 +1,16 @@
+{
+  "shots": [
+    { "name": "board", "width": 1440, "height": 1000, "full": true, "scale": 1,
+      "highlight": [
+        { "sel": ".fchip[data-g='turn']", "label": "Your turn before In progress" },
+        { "sel": "#h-reviews", "label": "New: review requests" },
+        { "sel": ".pill[data-k='draft'], .pill[data-k='review']", "label": "Draft / waiting for review" }
+      ] },
+    { "name": "details", "width": 1440, "height": 1000, "scale": 1,
+      "steps": [ { "click": ".nf-q[data-nav='d-queue']" }, { "click": ".nf-actions button:has-text('Details')", "wait": 500 } ],
+      "clip": ".drawer",
+      "highlight": [
+        { "sel": ".drawer .dsec.related", "label": "Also touched" }
+      ] }
+  ]
+}
