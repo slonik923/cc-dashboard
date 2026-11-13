@@ -757,3 +757,8 @@ a.ref-title:hover { text-decoration: underline; }
 .ccd .rr-repo, .ccd .rr-by { color: var(--text-3); font-size: 12px; white-space: nowrap; }
 .ccd .rrlist .ago { text-align: right; }
 @media (max-width: 640px) { .ccd .rrlist li { grid-template-columns: auto minmax(0, 1fr) 40px; } .ccd .rr-repo, .ccd .rr-by { display: none; } }
+
+/* `ccdeck preview`: make it obvious this isn't your normal dashboard */
+.ccd .previewtag { font: 700 12px/1 var(--mono); color: #111; background: #ffb020; border-radius: 999px; padding: 5px 10px; white-space: nowrap; max-width: 46ch; overflow: hidden; text-overflow: ellipsis; }
+.ccd .previewtag[hidden] { display: none; }
+.ccd .host { white-space: nowrap; }

@@ -719,3 +719,94 @@ def tearDownModule():
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PreviewTest(unittest.TestCase):
+    """`ccdeck preview` runs another ccdeck on the same sessions, with its own caches."""
+
+    def test_unpack_refuses_escaping_paths(self):
+        import io
+        import tarfile
+
+        def tarball(names):
+            buf = io.BytesIO()
+            with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+                for n in names:
+                    info = tarfile.TarInfo(n)
+                    info.size = 2
+                    tar.addfile(info, io.BytesIO(b"ok"))
+            return buf.getvalue()
+
+        dest = TMP / "unpack-ok"
+        cc.unpack_tarball(tarball(["repo-abc/ccdeck", "repo-abc/web/index.html"]), dest)
+        self.assertEqual((dest / "web" / "index.html").read_text(), "ok")
+        with self.assertRaises(RuntimeError):
+            cc.unpack_tarball(tarball(["repo-abc/../../evil"]), TMP / "unpack-bad")
+        self.assertFalse((TMP / "evil").exists())
+
+    def test_fork_pr_needs_trust(self):
+        saved = cc.github_json
+        cc.github_json = lambda path: {"number": 9, "title": "x", "head": {"sha": "f" * 40, "repo": {"full_name": "someone/fork"}},
+                                       "base": {"repo": {"full_name": "slonik923/ccdeck"}}}
+        try:
+            with self.assertRaises(SystemExit) as e:
+                cc.resolve_preview("9", "slonik923/ccdeck", trust=False)
+            self.assertIn("--trust", str(e.exception))
+        finally:
+            cc.github_json = saved
+
+    def test_preview_of_local_checkout(self):
+        import socket
+        import subprocess
+        build_fixtures()
+        sock = socket.socket()
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+        sock.close()
+        env = dict(os.environ, CCDECK_AUTOSTART="0")
+        r = subprocess.run([sys.executable, str(ROOT / "ccdeck"), "preview", str(ROOT), "--port", str(port), "--no-open"],
+                           capture_output=True, text=True, env=env, timeout=60)
+        log = lambda: (cc.PREVIEW_DIR / "serve.log").read_text() if (cc.PREVIEW_DIR / "serve.log").exists() else ""  # noqa: E731
+        try:
+            self.assertEqual(r.returncode, 0, r.stderr + r.stdout + log())
+            self.assertIn(f"http://localhost:{port}", r.stdout)
+            cfg = cc.PREVIEW_DIR / "claude"
+            for _ in range(100):  # "(still starting)" is allowed; wait for it here
+                if (cfg / "ccdeck" / "token").exists():
+                    try:
+                        urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=1).close()
+                        break
+                    except OSError:
+                        pass
+                time.sleep(0.3)
+            token = (cfg / "ccdeck" / "token").read_text().strip()
+            req = urllib.request.Request(f"http://127.0.0.1:{port}/api/sessions", headers={"X-CC-Token": token, "Host": f"localhost:{port}"})
+            snap = json.load(urllib.request.urlopen(req, timeout=5))
+            self.assertTrue(snap["preview"].startswith("local "))
+            self.assertIn("s-decision", {s["id"] for s in snap["sessions"]})  # your real transcripts
+            self.assertNotEqual(token, cc.TOKEN_FILE.read_text().strip() if cc.TOKEN_FILE.exists() else "")
+            self.assertFalse((cc.DATA_DIR / "daemon.json").exists() and
+                             json.loads((cc.DATA_DIR / "daemon.json").read_text()).get("port") == port)
+        finally:
+            subprocess.run([sys.executable, str(ROOT / "ccdeck"), "preview", "stop"], capture_output=True, env=env, timeout=30)
+        self.assertFalse((cc.PREVIEW_DIR / "preview.json").exists())
+
+    def test_pr_preview_downloads_once(self):
+        import subprocess
+        tar = subprocess.run(["git", "-C", str(ROOT), "archive", "--format=tar.gz", "--prefix=ccdeck-abc/", "HEAD"],
+                             capture_output=True).stdout
+        if not tar:
+            self.skipTest("not a git checkout")
+        saved = (cc.github_json, cc.download_source)
+        calls = []
+        cc.github_json = lambda path: {"number": 16, "title": "Group sessions", "head": {"sha": "a" * 40, "repo": {"full_name": "slonik923/ccdeck"}},
+                                       "base": {"repo": {"full_name": "slonik923/ccdeck"}}}
+        cc.download_source = lambda repo, sha, dest: (calls.append(sha), cc.unpack_tarball(tar, dest))
+        try:
+            src, label = cc.resolve_preview("16", "slonik923/cc-dashboard", trust=False)  # old name: same repo
+            self.assertTrue((src / "ccdeck").is_file())
+            self.assertEqual(label, "#16 Group sessions (aaaaaaa)")
+            cc.resolve_preview("#16", "slonik923/ccdeck", trust=False)
+            self.assertEqual(len(calls), 1)  # cached by commit
+        finally:
+            cc.github_json, cc.download_source = saved

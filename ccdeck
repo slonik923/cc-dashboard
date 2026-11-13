@@ -38,7 +38,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
-VERSION = "0.5.0"
+VERSION = "0.5.1"
 HOME = Path.home()
 CLAUDE_DIR = Path(os.environ.get("CLAUDE_CONFIG_DIR", HOME / ".claude"))
 PROJECTS_DIR = CLAUDE_DIR / "projects"
@@ -58,6 +58,8 @@ SCRIPT = Path(__file__).resolve()
 WEB_DIR = SCRIPT.parent / "web"
 IS_MAC = sys.platform == "darwin"
 UNIT_FILE = HOME / ".config" / "systemd" / "user" / "ccdeck.service"
+PREVIEW = os.environ.get("CCDECK_PREVIEW")  # set by `ccdeck preview`: a label such as "#16 Group sessions…"
+PREVIEW_DIR = CLAUDE_DIR / "ccdeck-preview"
 STABLE_DIR = HOME / ".local" / "share" / "ccdeck"  # a copy that survives plugin updates
 LAUNCHD_LABEL = "io.github.slonik923.ccdeck"
 GH_INSTALL = "brew install gh" if IS_MAC else "sudo apt install gh"
@@ -1287,7 +1289,7 @@ class Dashboard:
             "groups": [{"key": g, "label": l} for g, l in GROUPS],
             "states": {k: {"group": g, "label": l} for k, (g, l) in STATES.items()},
             "gh": bool(shutil.which("gh")), "hooks": hooks_active(),
-            "default_days": DEFAULT_DAYS, "port": self.port, "gh_install": GH_INSTALL,
+            "default_days": DEFAULT_DAYS, "port": self.port, "gh_install": GH_INSTALL, "preview": PREVIEW,
             "reviews": review_requests(sessions),
         }
         etag = hashlib.sha1(json.dumps(snap, sort_keys=True).encode()).hexdigest()[:16]
@@ -1300,7 +1302,7 @@ class Dashboard:
     def _notify_changes(self, rows):
         cur = {r["id"]: r["state"] for r in rows}
         prev, self.prev_states = self.prev_states, cur
-        if prev is None:
+        if prev is None or PREVIEW:
             return  # first scan after start: don't replay everything
         for r in rows:
             st, before = r["state"], prev.get(r["id"])
@@ -1330,7 +1332,7 @@ class Dashboard:
 
     def maybe_upgrade(self):
         """Restart into a newer ccdeck that the session hooks report (a plugin update), in place."""
-        if time.time() - getattr(self, "_upgrade_checked", 0) < 10:
+        if PREVIEW or time.time() - getattr(self, "_upgrade_checked", 0) < 10:
             return
         self._upgrade_checked = time.time()
         target = newer_install()
@@ -1483,7 +1485,8 @@ class Dashboard:
         return Handler
 
     def serve(self):
-        adopt_stable_copy()
+        if not PREVIEW:
+            adopt_stable_copy()
         self.refresh()
         self.heartbeat()
         threading.Thread(target=self.scan_loop, daemon=True).start()
@@ -1755,6 +1758,166 @@ def cmd_open(args):
     url = f"http://localhost:{port}"
     print(url)
     open_path(url)
+
+
+# --------------------------------------------------------------------- preview
+# `ccdeck preview 16` runs PR #16's ccdeck next to your own, on your real sessions, so you can try a
+# change before it's merged or released. It gets its own config folder: transcripts, hook states and
+# marks are shared (marks as a copy), while caches, token and daemon file are its own. Hooks keep
+# running from your installed ccdeck.
+
+PREVIEW_REPO = os.environ.get("CCDECK_REPO", "slonik923/ccdeck")
+PREVIEW_PORT = 7798
+
+
+def github_json(path):
+    """GET api.github.com/<path>, through `gh` when it's installed (auth, private repos)."""
+    if shutil.which("gh"):
+        r = subprocess.run(["gh", "api", path], capture_output=True, text=True, timeout=30)
+        if r.returncode == 0:
+            return json.loads(r.stdout)
+    import urllib.request
+    req = urllib.request.Request("https://api.github.com/" + path, headers={"Accept": "application/vnd.github+json",
+                                                                          "User-Agent": "ccdeck"})
+    with urllib.request.urlopen(req, timeout=30) as f:
+        return json.load(f)
+
+
+def download_source(repo, sha, dest):
+    """Download the repo at `sha` and unpack it into dest."""
+    import urllib.request
+    data = None
+    if shutil.which("gh"):
+        r = subprocess.run(["gh", "api", f"repos/{repo}/tarball/{sha}"], capture_output=True, timeout=120)
+        data = r.stdout if r.returncode == 0 else None
+    if data is None:
+        req = urllib.request.Request(f"https://codeload.github.com/{repo}/tar.gz/{sha}", headers={"User-Agent": "ccdeck"})
+        with urllib.request.urlopen(req, timeout=120) as f:
+            data = f.read()
+    unpack_tarball(data, dest)
+
+
+def unpack_tarball(data, dest):
+    """Unpack a GitHub tarball (one top folder) into dest. Only plain files and folders, inside dest."""
+    import io
+    import tarfile
+    tmp = dest.with_name(dest.name + ".part")
+    shutil.rmtree(tmp, ignore_errors=True)
+    tmp.mkdir(parents=True)
+    root = tmp.resolve()
+    with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tar:
+        for m in tar.getmembers():
+            parts = m.name.split("/", 1)
+            if len(parts) < 2 or not parts[1] or not (m.isfile() or m.isdir()):
+                continue  # the top folder, links and devices
+            target = (root / parts[1]).resolve()
+            if root not in target.parents:
+                raise RuntimeError(f"unsafe path in archive: {m.name}")
+            if m.isdir():
+                target.mkdir(parents=True, exist_ok=True)
+            else:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with tar.extractfile(m) as src, open(target, "wb") as out:
+                    shutil.copyfileobj(src, out)
+                if m.mode & 0o100:
+                    target.chmod(0o755)
+    shutil.rmtree(dest, ignore_errors=True)
+    tmp.rename(dest)
+
+
+def resolve_preview(target, repo, trust):
+    """(source folder, label) for a PR number, branch, tag, commit, or local checkout."""
+    if os.path.isdir(target):
+        src = Path(target).resolve()
+        if not (src / "ccdeck").is_file():
+            sys.exit(f"{target} has no ccdeck script.")
+        return src, f"local {src.name}"
+    if target.lstrip("#").isdigit():
+        pr = github_json(f"repos/{repo}/pulls/{target.lstrip('#')}")
+        head, base = pr.get("head") or {}, pr.get("base") or {}
+        head_repo = (head.get("repo") or {}).get("full_name") or "?"
+        if head_repo.lower() != ((base.get("repo") or {}).get("full_name") or repo).lower() and not trust:
+            sys.exit(f"PR #{pr.get('number')} comes from another repository ({head_repo}). "
+                     "Its code would run on your machine: read it first, then pass --trust.")
+        sha, label = head.get("sha"), f"#{pr.get('number')} {one_line(pr.get('title') or '', 60)}"
+    else:
+        sha = github_json(f"repos/{repo}/commits/{target}").get("sha")
+        label = target
+    if not sha:
+        sys.exit(f"Couldn't find {target} in {repo}.")
+    dest = PREVIEW_DIR / "src" / sha[:12]
+    if not (dest / "ccdeck").is_file():
+        print(f"Downloading {repo} at {sha[:12]}…")
+        download_source(repo, sha, dest)
+        olds = sorted((PREVIEW_DIR / "src").iterdir(), key=lambda p: p.stat().st_mtime)
+        for old in olds[:-5]:  # keep the last few
+            shutil.rmtree(old, ignore_errors=True)
+    return dest, f"{label} ({sha[:7]})"
+
+
+def preview_config_dir():
+    """A Claude config folder that sees your transcripts and hook states but keeps its own caches."""
+    cfg = PREVIEW_DIR / "claude"
+    (cfg / "ccdeck").mkdir(parents=True, exist_ok=True)
+    for link, real in ((cfg / "projects", PROJECTS_DIR), (cfg / "ccdeck" / "state", STATE_DIR)):
+        real.mkdir(parents=True, exist_ok=True)
+        if link.is_symlink() or link.exists():
+            if link.is_symlink() and os.readlink(link) == str(real):
+                continue
+            link.unlink() if link.is_symlink() or link.is_file() else shutil.rmtree(link)
+        link.symlink_to(real)
+    if MARKS_FILE.exists():
+        shutil.copy(MARKS_FILE, cfg / "ccdeck" / "marks.json")  # a copy: preview marks don't change yours
+    return cfg
+
+
+def stop_preview(quiet=False):
+    info = load_json(PREVIEW_DIR / "preview.json", {})
+    pid = info.get("pid")
+    if pid and pid_alive(pid, info.get("pid_start")):
+        try:
+            os.kill(pid, 15)
+        except OSError:
+            pass
+        if not quiet:
+            print(f"Stopped the preview of {info.get('label')}.")
+    elif not quiet:
+        print("No preview is running.")
+    (PREVIEW_DIR / "preview.json").unlink(missing_ok=True)
+
+
+def cmd_preview(args):
+    if args.target == "stop":
+        return stop_preview()
+    try:
+        src, label = resolve_preview(args.target, args.repo, args.trust)
+    except (OSError, ValueError, RuntimeError) as e:  # network, GitHub or archive problems
+        sys.exit(f"Couldn't get {args.target} from {args.repo}: {e}. "
+                 "Install and log in to the GitHub CLI (gh auth login), or pass a local checkout.")
+    stop_preview(quiet=True)
+    cfg = preview_config_dir()
+    env = dict(os.environ, CLAUDE_CONFIG_DIR=str(cfg), CCDECK_PREVIEW=label, CCDECK_NOTIFY="0", CCDECK_AUTOSTART="0")
+    log = open(PREVIEW_DIR / "serve.log", "w")
+    proc = subprocess.Popen([sys.executable, str(src / "ccdeck"), "serve", "--port", str(args.port)], env=env,
+                            stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True)
+    save_json(PREVIEW_DIR / "preview.json", {"pid": proc.pid, "pid_start": proc_start_time(proc.pid), "port": args.port,
+                                             "label": label, "source": str(src), "started": time.time()})
+    import urllib.request
+    url = f"http://localhost:{args.port}"
+    deadline, up = time.monotonic() + 20, False  # the first scan can take a while (macOS: ps and lsof)
+    while time.monotonic() < deadline:
+        if proc.poll() is not None:
+            sys.exit(f"The preview stopped right away; see {short_path(PREVIEW_DIR / 'serve.log')}.")
+        try:
+            urllib.request.urlopen(url, timeout=0.5).close()
+            up = True
+            break
+        except OSError:
+            time.sleep(0.2)
+    print(f"Preview of {label}: {url}" + ("" if up else "  (still starting)"))
+    print("It reads your real sessions; notes and marks you change there aren't kept. Stop it with: ccdeck preview stop")
+    if not args.no_open:
+        open_path(url)
 
 
 # ------------------------------------------------------------------------ hook
@@ -2335,6 +2498,12 @@ def main():
     sub.add_parser("uninstall", help="remove hooks, service and launcher")
     s = sub.add_parser("approvals", help="allow/deny permission prompts from the dashboard (opt-in)")
     s.add_argument("mode", nargs="?", choices=["on", "off", "status"], default="status")
+    s = sub.add_parser("preview", help="try a PR or branch of ccdeck on your sessions, next to your own dashboard")
+    s.add_argument("target", help="PR number, branch, tag or commit of ccdeck, a local checkout, or 'stop'")
+    s.add_argument("--port", type=int, default=PREVIEW_PORT)
+    s.add_argument("--repo", default=PREVIEW_REPO, help="GitHub repository (default %(default)s)")
+    s.add_argument("--trust", action="store_true", help="allow a PR from a fork (its code runs on your machine)")
+    s.add_argument("--no-open", action="store_true", help="don't open the browser")
     sub.add_parser("hook", help=argparse.SUPPRESS)
     args = p.parse_args()
 
@@ -2343,6 +2512,7 @@ def main():
         "done": cmd_mark("done"), "undone": cmd_mark("undone"), "park": cmd_mark("park"),
         "unpark": cmd_mark("unpark"), "note": cmd_mark("note"), "serve": cmd_serve,
         "open": cmd_open, "install": cmd_install, "approvals": cmd_approvals, "uninstall": cmd_uninstall, "hook": cmd_hook,
+        "preview": cmd_preview,
     }
     handlers[args.cmd](args)
 
