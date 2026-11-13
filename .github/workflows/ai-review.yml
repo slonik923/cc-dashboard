@@ -51,10 +51,11 @@ jobs:
                 const base = context.payload.pull_request.base.ref;
                 const compare = (basehead) => github.paginate(github.rest.repos.compareCommitsWithBasehead,
                   { owner, repo, basehead, per_page: 100 }, (res) => res.data.commits);
-                const sinceReview = await github.rest.repos.compareCommitsWithBasehead({ owner, repo, basehead: `${reviewed}...${head}` });
+                const { data: since } = await github.rest.repos.compareCommitsWithBasehead({ owner, repo, basehead: `${reviewed}...${head}`, per_page: 1 });
+                const sinceCommits = await compare(`${reviewed}...${head}`);  // all pages
                 const prOnly = new Set((await compare(`${base}...${head}`)).map((c) => c.sha));
-                const fresh = sinceReview.data.commits.filter((c) => prOnly.has(c.sha) && (c.parents || []).length < 2);
-                if (sinceReview.data.status === "diverged" || fresh.length) {
+                const fresh = sinceCommits.filter((c) => prOnly.has(c.sha) && (c.parents || []).length < 2);
+                if (since.status === "diverged" || fresh.length) {
                   problems.push(`CodeRabbit hasn't reviewed the latest commit${fresh.length > 1 ? "s" : ""} yet. It usually does within a few minutes; ` +
                     "to ask now, comment `@coderabbitai review`.");
                 }
