@@ -1,0 +1,74 @@
+# Required check for merging: both AI reviewers have looked at the PR and nothing serious is open.
+# It re-runs when a reviewer submits a review and when a review thread is resolved or reopened.
+name: AI review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  pull_request_review:
+    types: [submitted, dismissed]
+  pull_request_review_thread:
+    types: [resolved, unresolved]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: ai-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    name: AI review gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const REVIEWERS = { "gemini-code-assist[bot]": "Gemini Code Assist", "coderabbitai[bot]": "CodeRabbit" };
+            // Gemini marks each comment's severity with a badge image; these two block a merge.
+            const BLOCKING = [/critical\.svg/i, /high-priority\.svg/i, /!\[critical\]/i, /!\[high\]/i];
+            const { owner, repo } = context.repo;
+            const number = context.payload.pull_request.number;
+
+            const reviews = await github.paginate(github.rest.pulls.listReviews, { owner, repo, pull_number: number, per_page: 100 });
+            const problems = [];
+            for (const [login, name] of Object.entries(REVIEWERS)) {
+              const mine = reviews.filter((r) => r.user && r.user.login === login && r.state !== "PENDING");
+              if (!mine.length) {
+                problems.push(`${name} hasn't reviewed this PR yet. If it was opened before the app was installed, comment ` +
+                  (login.startsWith("gemini") ? "`/gemini review`." : "`@coderabbitai review`."));
+                continue;
+              }
+              const last = mine.filter((r) => r.state !== "COMMENTED").pop();
+              if (last && last.state === "CHANGES_REQUESTED") problems.push(`${name} requests changes.`);
+            }
+
+            // Unresolved review threads that a reviewer marked critical or high priority
+            const q = `query($owner:String!,$repo:String!,$number:Int!,$after:String){
+              repository(owner:$owner,name:$repo){ pullRequest(number:$number){
+                reviewThreads(first:100, after:$after){ pageInfo{hasNextPage endCursor}
+                  nodes{ isResolved path comments(first:1){ nodes{ author{login} body url } } } } } } }`;
+            let after = null, open = [];
+            do {
+              const res = await github.graphql(q, { owner, repo, number, after });
+              const t = res.repository.pullRequest.reviewThreads;
+              for (const th of t.nodes) {
+                const c = th.comments.nodes[0];
+                if (th.isResolved || !c) continue;
+                if (BLOCKING.some((re) => re.test(c.body || ""))) open.push(`${th.path}: ${c.url}`);
+              }
+              after = t.pageInfo.hasNextPage ? t.pageInfo.endCursor : null;
+            } while (after);
+            if (open.length) problems.push(`Unresolved critical or high-priority review comments:\n- ` + open.join("\n- "));
+
+            const summary = core.summary.addHeading("AI review gate", 3);
+            if (problems.length) {
+              summary.addList(problems);
+              await summary.write();
+              core.setFailed(problems.join("\n"));
+            } else {
+              summary.addRaw("Both reviewers have reviewed this PR, and nothing critical is open.");
+              await summary.write();
+            }

@@ -3,7 +3,7 @@
 language: en-US
 reviews:
   profile: chill
-  request_changes_workflow: false
+  request_changes_workflow: true   # blocks with "changes requested", approves once its comments are resolved
   high_level_summary: true
   poem: false
   review_status: true
