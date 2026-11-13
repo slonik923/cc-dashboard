@@ -788,6 +788,23 @@ class ServerTest(unittest.TestCase):
         self.assertEqual({s["id"]: s for s in snap["sessions"]}["s-closed"]["mark"]["note"], "QA")
         self.req("/api/action", data={"id": "s-closed", "action": "note", "text": ""})
 
+    def test_resume_of_an_open_session_never_starts_a_second_one(self):
+        saved = cc.peer_sessions, cc.focus_terminal, cc.open_terminal
+        opened = []
+        cc.peer_sessions = lambda: {"s-closed": {"name": "work-2d", "pid": 1}}
+        cc.open_terminal = lambda *a: opened.append(a) or "xterm"
+        try:
+            cc.focus_terminal = lambda pid: "gnome-terminal"
+            code, body = self.req("/api/action", data={"id": "s-closed", "action": "resume"})
+            self.assertEqual((code, json.loads(body)["focused"]), (200, "gnome-terminal"))
+            cc.focus_terminal = lambda pid: None
+            code, body = self.req("/api/action", data={"id": "s-closed", "action": "resume"})
+            self.assertEqual(code, 409)
+            self.assertIn("@work-2d", json.loads(body)["error"])
+            self.assertEqual(opened, [])
+        finally:
+            cc.peer_sessions, cc.focus_terminal, cc.open_terminal = saved
+
 
 class PsProcessTest(unittest.TestCase):
     """The macOS code path (no /proc): process facts from one cached `ps` snapshot."""
@@ -865,6 +882,22 @@ class MacDesktopTest(unittest.TestCase):
         i = cc.mac_terminal_command("/tmp", ["claude"], "iterm")
         self.assertIn('tell application "iTerm"', i)
         self.assertTrue(any("write text" in x for x in i))
+
+    def test_focus_commands(self):
+        gnome = {"GNOME_TERMINAL_SCREEN": "/org/gnome/Terminal/screen/ecdaf156_8be8_4402_9d37_193ec38ead77"}
+        saved = cc.shutil.which
+        cc.shutil.which = lambda b: "/usr/bin/" + b
+        try:
+            (label, [cmd]), = cc.focus_commands(gnome, None)
+            self.assertEqual(label, "gnome-terminal")
+            self.assertIn("ecdaf156-8be8-4402-9d37-193ec38ead77", cmd)
+            self.assertEqual(cc.focus_commands({"GNOME_TERMINAL_SCREEN": "/org/gnome/Terminal/screen/x; rm -rf"}, None), [])
+            self.assertEqual(cc.focus_commands({}, None), [])
+            out = cc.focus_commands(dict(gnome, TMUX="/tmp/tmux-1000/default,123,0", TMUX_PANE="%7"), None)
+        finally:
+            cc.shutil.which = saved
+        self.assertEqual([l for l, _ in out], ["tmux"])  # a pane's GNOME_TERMINAL_SCREEN is the tmux server's
+        self.assertEqual(out[0][1][0], ["tmux", "-S", "/tmp/tmux-1000/default", "select-window", "-t", "%7"])
 
     def test_applescript_escaping(self):
         self.assertEqual(cc.applescript_str('a "b" \\ c\nd'), '"a \\"b\\" \\\\ c d"')

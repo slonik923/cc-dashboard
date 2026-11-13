@@ -120,6 +120,7 @@ Each card shows:
 
 Each card has these buttons:
 - **Resume ▸** opens a new terminal window in the session's folder and runs `claude --resume <id>`.
+- **Go to tab** replaces it while the session is open: it switches to the terminal tab the session runs in, instead of starting a second `claude` on it. This works in gnome-terminal (X11 and Wayland), tmux (window and pane), and iTerm2 and Terminal.app on macOS. In other terminals the dashboard says where the session is open and doesn't start a second one.
 - **Copy cmd** copies that same command.
 - **Folder** opens the session's folder in the file manager.
 - **↻ PRs** re-checks the PR states now.
