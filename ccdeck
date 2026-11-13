@@ -38,7 +38,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
-VERSION = "0.5.0"
+VERSION = "0.5.1"
 HOME = Path.home()
 CLAUDE_DIR = Path(os.environ.get("CLAUDE_CONFIG_DIR", HOME / ".claude"))
 PROJECTS_DIR = CLAUDE_DIR / "projects"
@@ -1062,7 +1062,8 @@ def collect(include_all=False, days=DEFAULT_DAYS):
     for sid, s in sessions.items():
         hook = hooks.get(sid)
         if hook and hook.get("pid"):
-            alive = pid_alive(hook["pid"], hook.get("pid_start")) and hook.get("status") != "ended"
+            # a live `--resume <id>` wins: another process sharing the session may have ended it
+            alive = (pid_alive(hook["pid"], hook.get("pid_start")) and hook.get("status") != "ended") or sid in argv_blob
             s["live_source"] = "hook"
         else:
             alive = sid in argv_blob or sid in guessed_live

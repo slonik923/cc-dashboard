@@ -360,6 +360,14 @@ class HookTest(unittest.TestCase):
         self.run_hook({"session_id": sid, "hook_event_name": "SessionEnd", "reason": "exit"})
         self.assertEqual(by_id(cc.collect(True, 10 ** 6))[sid]["state"], "closed")
 
+        # a second process resumed the same session and is still open
+        saved = cc.running_claude_processes
+        cc.running_claude_processes = lambda: [(1, str(WORK), ["claude", "--resume", sid])]
+        try:
+            self.assertTrue(by_id(cc.collect(True, 10 ** 6))[sid]["alive"])
+        finally:
+            cc.running_claude_processes = saved
+
     def test_bad_payloads_ignored(self):
         for p in ([1], "x", {"session_id": "../../etc"}, {}):
             self.run_hook(p)
