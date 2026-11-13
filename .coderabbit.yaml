@@ -36,7 +36,7 @@ reviews:
       instructions: |
         Must run on bash 3.2 (macOS): no associative arrays or other bash 4+ features.
 chat:
-  auto_reply: true
+  auto_reply: false       # answer only when @coderabbitai is mentioned (fewer comments, fewer emails)
 knowledge_base:
   code_guidelines:
     enabled: true
