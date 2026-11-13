@@ -345,16 +345,22 @@ function deco(s) {
   const links = (s.refs || []).map((r) => {
     const [icon, name] = LINKS[r.kind] || ["doc", r.kind];
     const t = r.title ? oneLine(r.title, 60) : "";
-    return { icon, url: r.url, name, title: t, source: r.source,
+    return { icon, url: r.url, name, title: t, source: r.start ? "start" : r.source, primary: !!r.primary,
       label: t ? name + " · " + oneLine(t, 26) : name, full: t ? name + " · " + t : name };
   });
-  const issues = (s.linear || []).map((r) => ({ key: r.key, url: r.url, title: r.title || "", source: r.source, primary: !!r.primary }));
+  const issues = (s.linear || []).map((r) => ({ key: r.key, url: r.url, title: r.title || "", source: r.start ? "start" : r.source, primary: !!r.primary }));
+  // The session's own things (its ticket, the page it started from, PRs and docs it made) vs. ones it only touched
+  const main = { prs: prs.filter((p) => p.own), issues: issues.filter((i) => i.primary), links: links.filter((l) => l.primary) };
+  const related = { prs: prs.filter((p) => !p.own), issues: issues.filter((i) => !i.primary), links: links.filter((l) => !l.primary) };
+  const relatedN = related.prs.length + related.issues.length + related.links.length;
+  const full = (msg || "").trim();
+  const long = !!s.last_text_cut || full.length > 600 || full.replace(/\s+/g, " ").length > reason.length + 40 || reason.endsWith("…");
   const m = s.mark || {};
   return {
     raw: s, id: s.id, k, g: st.g, stateLabel: st.l, icon: st.i, title: s.display_title || "(untitled)",
     project: s.project || "?", cwd: s.cwd || "", branch: s.branch || "no branch", sid: s.id.slice(0, 8),
     prompts: s.prompts || 0, ts: s.last_ts || 0, ago: agoShort(s.last_ts), run: !!s.alive,
-    reason, code, msg, prs, links, issues, files: (s.files || []).length, fileList: s.files || [],
+    reason, code, msg, prs, links, issues, main, related, relatedN, long, cut: !!s.last_text_cut, files: (s.files || []).length, fileList: s.files || [],
     note: m.note || "", parked: !!m.parked, marked: !!m.done,
     used, max, pct, lvl: pct >= 85 ? "high" : pct >= 60 ? "warn" : "ok", inTok, outTok, u, sub,
     ctxLabel: tok(used) + " / " + tok(max),
@@ -376,7 +382,7 @@ function prView(p) {
     else if (p.draft) { k = "draft"; icon = "draft"; label = p.checks === "passing" ? "Draft · CI passing" : "Draft"; short = "Draft"; }
     else { k = "ready"; icon = "pr"; label = "Ready for review"; short = "Ready"; }
   } else if (p.error) { label = short = "State unknown"; }
-  return { k, icon, n, label, short, url: p.url, title: p.title || "", repo: p.repo || "", error: p.error };
+  return { k, icon, n, label, short, url: p.url, title: p.title || "", repo: p.repo || "", error: p.error, own: p.own !== false, source: p.source };
 }
 function matches(s, q) {
   if (!q) return true;
@@ -392,17 +398,19 @@ const ctx = (s) => h("span", { class: "ctx", "data-lvl": s.lvl, title: s.ctxTitl
   h("span", { class: "ctx-bar" }, h("span", { class: "ctx-fill", style: "width: " + s.pct + "%" })), h("span", { class: "ctx-num" }, s.ctxLabel));
 const prChip = (p, short) => h("a", { class: "prchip", href: p.url, target: "_blank", rel: "noopener noreferrer", "data-k": p.k, title: (p.title || p.url) + (p.error ? "\n" + p.error : "") },
   ic(p.icon), h("span", { class: "num" }, p.n), short ? p.short : p.label);
-const SOURCE = { created: "created here", you: "you shared", claude: "mentioned", tool: "looked up", branch: "from the branch" };
+const SOURCE = { created: "created here", start: "the session started from it", you: "you shared", claude: "mentioned", tool: "looked up", branch: "from the branch" };
 function issueChip(i, withTitle) {
   const tip = i.key + (i.title ? " · " + i.title : "") + (i.url ? "" : "\nSet CCDECK_LINEAR_WORKSPACE to make this a link");
   const kids = [ic("issue"), h("span", { class: "num" }, i.key), withTitle && i.title ? oneLine(i.title, 40) : null];
   return i.url ? h("a", { class: "lchip issue", href: i.url, target: "_blank", rel: "noopener noreferrer", title: tip }, kids)
     : h("span", { class: "lchip issue", title: tip }, kids);
 }
-// Previews show at most a few chips; the rest is one click away in the details.
+// Previews show only the session's own ticket, pages, PRs and docs, at most a few;
+// everything else is one click away in the details.
 function chipRow(s, max, withTitle) {
-  const all = [...s.issues.map((i) => () => issueChip(i, withTitle && s.issues.length === 1)),
-    ...s.prs.map((p) => () => prChip(p, max < 4)), ...s.links.map((l) => () => linkChip(l))];
+  const m = s.main;
+  const all = [...m.issues.map((i) => () => issueChip(i, withTitle && m.issues.length === 1)),
+    ...m.prs.map((p) => () => prChip(p, max < 4)), ...m.links.map((l) => () => linkChip(l))];
   const shown = all.slice(0, max).map((f) => f());
   const rest = all.length - shown.length;
   if (rest > 0) shown.push(h("button", { class: "metaitem linkcount", title: "Show all in the details", onclick: () => openDrawer(s.id) }, "+" + rest));
@@ -417,6 +425,7 @@ const titleBtn = (s, cls) => h("button", { class: cls || "title-btn", "data-nav"
 
 function menu(s, up) {
   const items = [
+    ["info", "Details", "I", () => openDrawer(s.id)],
     ["copy", "Copy resume command", "C", () => copy(s.resumeCmd, "Resume command")],
     ["folder", "Open folder", "O", () => act(s.id, "open_folder")],
     ["refresh", "Refresh PRs", "R", () => act(s.id, "refresh_prs"), !s.prs.length],
@@ -443,11 +452,22 @@ const copyBtn = (s, big) => big
   ? h("button", { class: "btn" + (big === "lg" ? " btn-lg" : ""), onclick: () => copy(s.resumeCmd, "Resume command") }, ic("copy", big === "lg" ? null : "i-sm"), "Copy command")
   : h("button", { class: "ibtn ibtn-sm", "aria-label": "Copy resume command", title: "Copy resume command", onclick: () => copy(s.resumeCmd, "Resume command") }, ic("copy", "i-sm"));
 
+// A click on a card or row that doesn't land on a link, button or selected text opens the details.
+function openOnClick(id) {
+  return (e) => {
+    if (e.target.closest("a, button, input, textarea, .menu, .ctx")) return;
+    const sel = window.getSelection && window.getSelection();
+    if (sel && String(sel).trim()) return;
+    openDrawer(id);
+  };
+}
+const moreBtn = (s) => s.long ? h("button", { class: "linkbtn readmore", onclick: () => openDrawer(s.id) },
+  s.cut ? "Long message, read it in the details" : "Read the full message") : null;
 function card(s) {
-  return h("article", { class: "card", "data-g": s.g, "data-sid": s.id, "aria-label": s.stateLabel + ": " + s.title },
+  return h("article", { class: "card clickable", "data-g": s.g, "data-sid": s.id, "aria-label": s.stateLabel + ": " + s.title, onclick: openOnClick(s.id) },
     h("div", { class: "card-top" }, pill(s), run(s), h("span", { class: "grow" }), h("span", { class: "ago" }, s.ago)),
     h("div", { style: "display: flex; flex-direction: column; gap: 3px; min-width: 0" }, h("h3", { class: "card-title" }, titleBtn(s)), loc(s)),
-    h("div", { class: "ask" }, h("p", {}, s.reason), s.code ? h("code", {}, s.code) : null),
+    h("div", { class: "ask" }, h("p", {}, s.reason), s.code ? h("code", {}, s.code) : null, moreBtn(s)),
     h("div", { class: "card-meta" }, chipRow(s, 4), noteEl(s), h("span", { class: "grow" }),
       s.files ? h("span", { class: "metaitem", title: "Files written" }, ic("file", "i-xs"), s.files) : null, ctx(s)),
     h("div", { class: "card-actions" }, resumeBtn(s, "btn btn-primary", null, "i-sm"), copyBtn(s),
@@ -455,7 +475,7 @@ function card(s) {
       h("span", { class: "grow" }), h("button", { class: "btn btn-ghost btn-sm", onclick: () => openDrawer(s.id) }, "Details"), menuBtn(s, true)));
 }
 function row(s) {
-  return h("div", { class: "row", role: "listitem", "data-g": s.g, "data-sid": s.id },
+  return h("div", { class: "row clickable", role: "listitem", "data-g": s.g, "data-sid": s.id, onclick: openOnClick(s.id) },
     pill(s),
     h("div", { class: "row-main" }, titleBtn(s), h("span", { class: "row-reason", title: s.reason }, s.reason)),
     h("span", { class: "row-loc", title: s.cwd }, s.project, " ", h("span", {}, "/"), " ", s.branch),
@@ -478,7 +498,8 @@ function focusPanel(items) {
       h("div", { class: "nf-swap", key: f.id },
         h("div", { class: "nf-top" }, pill(f), run(f), h("span", { class: "grow" }), h("span", { class: "nf-wait" }, "Waiting " + f.ago)),
         h("div", { style: "display: flex; flex-direction: column; gap: 4px; min-width: 0" }, h("h3", { class: "nf-title" }, f.title), loc(f)),
-        f.msg ? h("div", { class: "nf-msg md" }, md(tail(f.msg, 3000))) : null,
+        f.msg && (f.cut || f.msg.length > 3000) ? h("button", { class: "linkbtn readmore", onclick: () => openDrawer(f.id) }, "The start of this message is cut. Read all of it in the details") : null,
+        f.msg ? h("div", { class: "nf-msg md" }, md(tail(f.msg, 3000).replace(/^…\n\n/, ""))) : null,
         f.code ? h("code", { class: "nf-code", title: f.code }, f.code) : null,
         h("div", { class: "card-meta" }, chipRow(f, 4, true), noteEl(f), h("span", { class: "grow" }), ctx(f)),
         h("div", { class: "nf-actions" }, resumeBtn(f, "btn btn-primary btn-lg"), copyBtn(f, "lg"), h("span", { class: "grow" }),
@@ -685,6 +706,13 @@ const calmArt = () => svgFrom('<svg class="calm-art" viewBox="0 0 88 88" fill="n
 const emptyArt = () => svgFrom('<svg class="empty-art" viewBox="0 0 112 112" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="14" y="24" width="84" height="64" rx="8"></rect><path d="M14 38h84"></path><circle cx="24" cy="31" r="1.5"></circle><circle cx="31" cy="31" r="1.5"></circle><circle cx="38" cy="31" r="1.5"></circle><path d="M28 54l10 8-10 8"></path><path d="M46 72h16"></path></svg>');
 
 // ---- detail drawer ----
+const issueLi = (i) => h("li", {}, issueChip(i), h("span", { class: "ref-title" }, i.title || (i.url ? "" : "No title seen yet")), h("span", { class: "ref-src" }, SOURCE[i.source] || ""));
+const linkLi = (l) => h("li", {},
+  h("a", { class: "lchip", href: l.url, target: "_blank", rel: "noopener noreferrer", title: l.url }, ic(l.icon), l.name),
+  h("a", { class: "ref-title", href: l.url, target: "_blank", rel: "noopener noreferrer" }, l.title || shortUrl(l.url)),
+  h("span", { class: "ref-src" }, SOURCE[l.source] || ""));
+const prCard = (p) => h("div", { class: "prcard" },
+  h("div", { class: "prcard-h" }, prChip(p), h("span", { class: "ttl" }, p.title || p.repo), h("span", { class: "muted", style: "font-size: 12px; white-space: nowrap" }, p.repo)));
 let drawerSig = "";
 const expanded = {}; // drawer sections opened with "Show all", per session
 let lastAll = [];
@@ -727,7 +755,7 @@ function renderDrawer(all) {
       h("div", { class: "dr-head" },
         h("div", { class: "card-top" }, pill(s), run(s), h("span", { class: "grow" }), h("span", { class: "ago" }, s.ago === "now" ? "just now" : s.ago + " ago"),
           h("button", { class: "ibtn ibtn-sm", "aria-label": "Close details", "data-key": "dr-close", onclick: closeDrawer }, ic("close"))),
-        h("h2", { class: "dr-title", id: "dr-title" }, s.title), loc(s, true),
+        h("h2", { class: "dr-title", id: "dr-title" }, s.title), loc(s),
         h("div", { class: "dr-actions" }, resumeBtn(s, "btn btn-primary btn-lg", "Resume session"), copyBtn(s, "lg")),
         h("div", { class: "dr-actions", style: "gap: 2px; padding-top: 0; margin-left: -10px" },
           h("button", { class: "btn btn-ghost btn-sm", onclick: () => act(s.id, "open_folder") }, ic("folder", "i-sm"), "Open folder"),
@@ -736,21 +764,25 @@ function renderDrawer(all) {
           h("button", { class: "btn btn-ghost btn-sm", onclick: () => $("dr-note").focus() }, ic("note", "i-sm"), "Note"),
           h("button", { class: "btn btn-ghost btn-sm", onclick: () => act(s.id, s.marked ? "undone" : "done") }, ic("check", "i-sm"), s.marked ? "Reopen" : "Mark done"))),
       h("div", { class: "dr-body" },
-        h("section", { class: "dsec" }, h("h3", {}, msgHead), h("div", { class: "msg md" }, md((s.msg || s.reason || "No messages yet.").trim())),
+        h("section", { class: "dsec" }, h("h3", {}, msgHead),
+          s.cut ? h("p", { class: "cutnote" }, "This message is long. Its start is cut here; resume the session to read all of it.") : null,
+          h("div", { class: "msg md" }, md((s.msg || s.reason || "No messages yet.").trim())),
           s.code ? h("div", { class: "cmd", "data-g": s.g, style: "background: var(--g-tint); border-color: var(--g-line)" }, h("span", {}, s.code)) : null,
           hint ? h("p", { style: "margin: 0; font-size: 12px; color: var(--text-3)" }, hint) : null),
         h("section", { class: "dsec" }, h("h3", {}, "Resume command"),
           h("div", { class: "cmd" }, h("span", {}, s.resumeCmd), h("button", { class: "btn btn-sm", onclick: () => copy(s.resumeCmd, "Resume command") }, ic("copy", "i-xs"), "Copy"))),
-        s.prs.length ? h("section", { class: "dsec" }, h("h3", {}, "Pull requests · " + s.prs.length), capped(s, "prs", s.prs, 3, (p) => h("div", { class: "prcard" },
-          h("div", { class: "prcard-h" }, prChip(p), h("span", { class: "ttl" }, p.title || p.repo), h("span", { class: "muted", style: "font-size: 12px; white-space: nowrap" }, p.repo))))) : null,
-        s.issues.length ? h("section", { class: "dsec" }, h("h3", {}, "Linear · " + s.issues.length), h("ul", { class: "reflist" }, capped(s, "issues", s.issues, 4, (i) => h("li", {},
-          issueChip(i), h("span", { class: "ref-title" }, i.title || (i.url ? "" : "No title seen yet")), h("span", { class: "ref-src" }, SOURCE[i.source] || "")), true))) : null,
-        s.links.length ? h("section", { class: "dsec" }, h("h3", {}, "Links · " + s.links.length), h("ul", { class: "reflist" }, capped(s, "links", s.links, 5, (l) => h("li", {},
-          h("a", { class: "lchip", href: l.url, target: "_blank", rel: "noopener noreferrer", title: l.url }, ic(l.icon), l.name),
-          h("a", { class: "ref-title", href: l.url, target: "_blank", rel: "noopener noreferrer" }, l.title || shortUrl(l.url)),
-          h("span", { class: "ref-src" }, SOURCE[l.source] || "")), true))) : null,
+        s.main.issues.length ? h("section", { class: "dsec" }, h("h3", {}, s.main.issues.length === 1 ? "Linear ticket" : "Linear tickets · " + s.main.issues.length),
+          h("ul", { class: "reflist" }, capped(s, "issues", s.main.issues, 4, issueLi, true))) : null,
+        s.main.prs.length ? h("section", { class: "dsec" }, h("h3", {}, "Pull requests · " + s.main.prs.length), capped(s, "prs", s.main.prs, 3, prCard)) : null,
+        s.main.links.length ? h("section", { class: "dsec" }, h("h3", {}, "Pages and documents · " + s.main.links.length),
+          h("ul", { class: "reflist" }, capped(s, "links", s.main.links, 5, linkLi, true))) : null,
         s.fileList.length ? h("section", { class: "dsec" }, h("h3", {}, "Files written · " + s.fileList.length),
           h("ul", { class: "files" }, capped(s, "files", s.fileList.slice().reverse(), 6, (f) => h("li", {}, h("span", { title: f }, f.startsWith(s.cwd + "/") ? f.slice(s.cwd.length + 1) : f)), true))) : null,
+        s.relatedN ? h("section", { class: "dsec related" }, h("h3", {}, "Also touched · " + s.relatedN),
+          h("p", { class: "cutnote" }, "Tickets, PRs and pages this session looked up or mentioned, but didn't start from or create."),
+          h("ul", { class: "reflist" }, capped(s, "related", [...s.related.issues.map((i) => () => issueLi(i)),
+            ...s.related.prs.map((p) => () => h("li", {}, prChip(p, true), h("a", { class: "ref-title", href: p.url, target: "_blank", rel: "noopener noreferrer" }, p.title || p.repo), h("span", { class: "ref-src" }, SOURCE[p.source] || ""))),
+            ...s.related.links.map((l) => () => linkLi(l))], 6, (f) => f(), true))) : null,
         h("section", { class: "dsec" }, h("h3", {}, "Tokens"),
           h("div", { class: "tok-big" }, h("b", {}, tok(s.used)), h("span", { class: "muted" }, "of " + tok(s.max) + " context window · " + s.pct + "%")),
           h("div", { class: "bigbar", role: "img", "aria-label": "Context window " + tok(s.used) + " of " + tok(s.max) }, h("span", { style: "width: " + s.pct + "%; background: var(--text-2)" })),

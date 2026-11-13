@@ -42,7 +42,7 @@ fixtures = {
     4: {"state": "OPEN", "isDraft": False, "reviewDecision": "CHANGES_REQUESTED", "mergeable": "MERGEABLE",
         "statusCheckRollup": []},
     5: {"state": "OPEN", "isDraft": False, "reviewDecision": "", "mergeable": "MERGEABLE",
-        "statusCheckRollup": [{"status": "IN_PROGRESS", "conclusion": ""}]},
+        "statusCheckRollup": [{"status": "IN_PROGRESS", "conclusion": ""}], "headRefName": "feat/x"},
 }
 d = dict(fixtures[n], number=n, title=f"PR {n}")
 print(json.dumps(d))
@@ -107,10 +107,19 @@ def build_fixtures():
     write_session("s-error", [user("go", 50), asst([text("API Error: overloaded")], 49, isApiErrorMessage=True)])
     write_session("s-pr-ready", [user("ship", 80), asst([tool("b1", "Bash", {"command": "gh pr create"})], 79),
                                  result("b1", 79, PR.format(1)), asst([text("Opened the draft PR.")], 78)])
-    write_session("s-pr-failing", [user("ship", 80), asst([text("PR: " + PR.format(2))], 79)])
-    write_session("s-pr-merged", [user("ship", 80), asst([text("PR: " + PR.format(3))], 79)])
-    write_session("s-pr-changes", [user("ship", 80), asst([text("PR: " + PR.format(4))], 79)])
+    for sid, n in (("s-pr-failing", 2), ("s-pr-merged", 3), ("s-pr-changes", 4)):
+        write_session(sid, [user("ship", 80), asst([tool("c1", "mcp__github__create_pull_request")], 79),
+                            result("c1", 79, json.dumps({"url": PR.format(n)})), asst([text("PR: " + PR.format(n))], 78)])
+    # no create call seen, but the PR's branch is the session's branch
     write_session("s-pr-pending", [user("ship", 80), asst([text("PR: " + PR.format(5))], 79)])
+    # only mentions someone else's failing PR: that mustn't make it "CI failing"
+    write_session("s-pr-mentioned", [user("why is CI red on " + PR.format(2) + "?", 80),
+                                     asst([text("It's a flaky test in " + PR.format(2) + ".")], 79)])
+    write_session("s-start", [
+        user("Work on https://linear.app/acme/issue/ENG-7/fix-login using https://www.notion.so/acme/Login-spec-0123456789abcdef0123456789abcdef", 70),
+        asst([tool("l1", "mcp__linear__get_issue", {"id": "ENG-9"})], 69),
+        result("l1", 69, json.dumps({"identifier": "ENG-9", "title": "Old login bug", "url": "https://linear.app/acme/issue/ENG-9"})),
+        asst([text("See also https://www.notion.so/acme/Auth-notes-fedcba9876543210fedcba9876543210")], 68)])
     write_session("s-links", [user("doc", 60), asst([
         tool("w1", "Write", {"file_path": str(WORK / "plan.md")}),
     ], 59), result("w1", 59), asst([text("Published https://claude.ai/code/artifact/abc-123 and "
@@ -163,6 +172,20 @@ class ClassifyTest(unittest.TestCase):
         self.assertEqual(self.state("s-question"), "question")
         self.assertEqual(self.state("s-plan"), "plan")
         self.assertEqual(self.state("s-error"), "error")
+
+    def test_mentioned_pr_does_not_set_state(self):
+        row = self.rows["s-pr-mentioned"]
+        self.assertEqual(row["state"], "closed")
+        self.assertEqual([(p["number"], p["own"]) for p in row["pr_details"]], [(2, False)])
+        self.assertTrue(self.rows["s-pr-pending"]["pr_details"][0]["own"])  # same branch
+
+    def test_primary_ticket_and_page(self):
+        row = self.rows["s-start"]
+        lin = {r["key"]: r["primary"] for r in row["linear_list"]}
+        self.assertEqual(lin, {"ENG-7": True, "ENG-9": False})
+        pages = {r["title"]: r["primary"] for r in row["refs"] if r["kind"] == "notion"}
+        self.assertEqual(sorted(pages.values()), [False, True])
+        self.assertTrue(next(r for r in row["refs"] if "Login-spec" in r["url"])["primary"])
 
     def test_pr_states(self):
         self.assertEqual(self.state("s-pr-ready"), "pr_review")

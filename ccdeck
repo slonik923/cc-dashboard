@@ -38,7 +38,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
-VERSION = "0.4.3"
+VERSION = "0.4.4"
 HOME = Path.home()
 CLAUDE_DIR = Path(os.environ.get("CLAUDE_CONFIG_DIR", HOME / ".claude"))
 PROJECTS_DIR = CLAUDE_DIR / "projects"
@@ -63,7 +63,7 @@ GH_INSTALL = "brew install gh" if IS_MAC else "sudo apt install gh"
 PLIST_FILE = HOME / "Library" / "LaunchAgents" / f"{LAUNCHD_LABEL}.plist"
 DESKTOP_FILE = HOME / ".local" / "share" / "applications" / "ccdeck.desktop"
 DEFAULT_PORT = int(os.environ.get("CCDECK_PORT", "7799"))
-CACHE_VERSION = 7
+CACHE_VERSION = 8
 DEFAULT_DAYS = 14
 QUIET_AFTER = 15 * 60  # "working" with no activity for this long => probably interrupted
 HOOK_EVENTS = ["SessionStart", "UserPromptSubmit", "PostToolUse", "PostToolUseFailure", "Notification",
@@ -515,10 +515,12 @@ def parse_transcript(path):
 
     def note_ref(url, kind, title, source):
         r = refs.get(url)
+        start = source == "you" and info["prompts"] == 0  # shared in the prompt that started the session
         if r is None:
             refs[url] = {"url": url, "kind": kind, "title": title or (notion_title(url) if kind == "notion" else None),
-                         "source": source}
+                         "source": source, "start": start}
             return
+        r["start"] = r.get("start") or start
         if title and not r["title"]:
             r["title"] = title
         if SOURCE_RANK[source] > SOURCE_RANK[r["source"]]:
@@ -526,7 +528,8 @@ def parse_transcript(path):
 
     def note_issue(key, url, title, source):
         key = key.upper()
-        r = linear.setdefault(key, {"key": key, "url": None, "title": None, "source": source})
+        r = linear.setdefault(key, {"key": key, "url": None, "title": None, "source": source, "start": False})
+        r["start"] = r["start"] or (source == "you" and info["prompts"] == 0)
         r["url"] = r["url"] or url
         r["title"] = r["title"] or title
         if SOURCE_RANK[source] > SOURCE_RANK[r["source"]]:
@@ -537,7 +540,8 @@ def parse_transcript(path):
             return
         if with_prs:
             for m in PR_RE.findall(text):
-                prs.setdefault(m, None)
+                if prs.get(m) != "created":
+                    prs[m] = source
         for kind, rx in REF_RES:
             for m in rx.findall(text):
                 note_ref(m.rstrip(").,;:]'\"`"), kind, None, source)
@@ -663,6 +667,9 @@ def parse_transcript(path):
     info["pending_tool"] = list(pending.values())[-1] if pending else None
     info["pending_input"] = pending_inputs.get(list(pending)[-1]) if pending else None
     info["prs"] = list(prs)
+    info["pr_sources"] = dict(prs)
+    for r in refs.values():
+        r["primary"] = bool(r.get("start") or r["source"] == "created")
     info["refs"] = list(refs.values())
     info["linear"] = linear
     info["issue_keys"] = [k for k in keys if k not in linear]
@@ -771,7 +778,7 @@ def fetch_pr(url):
     try:
         r = subprocess.run(
             ["gh", "pr", "view", url, "--json",
-             "number,title,state,isDraft,reviewDecision,mergeable,statusCheckRollup"],
+             "number,title,state,isDraft,reviewDecision,mergeable,statusCheckRollup,headRefName"],
             capture_output=True, text=True, timeout=20)
     except (OSError, subprocess.SubprocessError) as e:
         return {"error": str(e)}
@@ -788,6 +795,7 @@ def fetch_pr(url):
         "review": (d.get("reviewDecision") or "").lower(),  # approved | changes_requested | review_required
         "mergeable": (d.get("mergeable") or "").lower(),  # mergeable | conflicting | unknown
         "checks": summarize_checks(d.get("statusCheckRollup")),
+        "head": d.get("headRefName") or "",
     }
 
 
@@ -832,6 +840,19 @@ def pr_info(url, cache):
     elif data:
         base.update(data)
     return base
+
+
+def pr_details(s, cache):
+    """The session's PRs, its own first: ones it created, or whose branch is the session's branch.
+    PRs it only mentioned or looked up are kept, marked as related."""
+    out = []
+    for u in s.get("prs") or []:
+        p = pr_info(u, cache)
+        p["source"] = (s.get("pr_sources") or {}).get(u) or "claude"
+        p["own"] = p["source"] == "created" or bool(p.get("head") and p["head"] == s.get("branch"))
+        out.append(p)
+    out.sort(key=lambda p: not p["own"])
+    return out
 
 
 # ----------------------------------------------------------------- classify
@@ -901,7 +922,7 @@ def classify(s, hook, alive):
         return "error"
     if s.get("last_role") == "assistant" and asks_decision(s.get("last_text")):
         return "decision"
-    prs = pr_state(s.get("pr_details") or [])
+    prs = pr_state([p for p in s.get("pr_details") or [] if p.get("own", True)])
     if prs == "pr_merged" and not alive:
         return "pr_merged"
     if prs and prs != "pr_merged":
@@ -965,12 +986,14 @@ def resolve_linear(sessions):
         out = []
         for key, r in found.items():
             r["url"] = r["url"] or (f"https://linear.app/{ws}/issue/{key}" if ws else None)
-            r["primary"] = key == primary
+            r["primary"] = key == primary or bool(r.get("start")) or r["source"] == "created"
             out.append(r)
+        if out and not any(r["primary"] for r in out):
+            shared = [r for r in out if r["source"] == "you"]
+            if len(shared) == 1:  # the one ticket you pasted is the session's ticket
+                shared[0]["primary"] = True
         rank = {"branch": 4, "created": 3, "you": 2, "tool": 1, "claude": 0}
         out.sort(key=lambda r: (not r["primary"], -rank.get(r["source"], 0), r["key"]))
-        if out and not primary:
-            out[0]["primary"] = True
         s["linear_list"] = out
 
 
@@ -1001,7 +1024,7 @@ def collect(include_all=False, days=DEFAULT_DAYS):
             s["live_source"] = "guess"
         s["alive"] = alive
         s["mark"] = marks.get(sid) or {}
-        s["pr_details"] = [pr_info(u, prc) for u in s["prs"]]
+        s["pr_details"] = pr_details(s, prc)
         st = classify(s, hook, alive)
         s["state"] = st
         s["group"], s["label"] = STATES[st]
@@ -1162,12 +1185,16 @@ def open_path(target):
 
 # ------------------------------------------------------------------- server
 
+MSG_LIMIT = 8000  # characters of the last message sent to the page
+
+
 def session_json(s):
     keep = ("id", "display_title", "title", "cwd", "branch", "first_ts", "last_ts", "prompts",
             "last_role", "pending_tool", "pending_input", "links", "files", "alive", "live_source",
             "mark", "pr_details", "state", "group", "label", "hook_message")
     d = {k: s.get(k) for k in keep}
-    d["last_text"] = (s.get("last_text") or "")[-4000:]
+    d["last_text"] = (s.get("last_text") or "")[-MSG_LIMIT:]
+    d["last_text_cut"] = len(s.get("last_text") or "") > MSG_LIMIT
     d["last_prompt"] = (s.get("last_prompt") or "")[-1500:]
     d["refs"] = s.get("refs") or []
     d["linear"] = s.get("linear_list") or []
@@ -1559,7 +1586,7 @@ def cmd_show(args):
     s = resolve(args.id)
     if s["prs"] and not args.no_gh:
         refresh_prs(s["prs"], force=True)
-        s["pr_details"] = [pr_info(u, pr_cache()) for u in s["prs"]]
+        s["pr_details"] = pr_details(s, pr_cache())
     m = s["mark"]
     print(bold(title_of(s)))
     print(f"  id        {s['id']}")

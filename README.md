@@ -76,7 +76,7 @@ The page is laid out to answer "what needs me?" first:
 - Everything else is a compact row, with actions in a menu (or the keyboard).
 - The strip of lines under the header has one line per session, coloured by its state.
 
-Click a title, or press Enter, for the detail drawer: the full message, resume command, PRs, links, files, tokens, and your note. The page is dark only.
+Click a card or row, or press Enter, for the detail drawer: the full message, resume command, PRs, links, files, tokens, and your note. The actions menu has **Details** too. The page is dark only.
 
 Sessions are grouped by what they need from you. The dashboard refreshes every 2 seconds. The browser tab title and icon show how many sessions need you.
 
@@ -104,9 +104,11 @@ Each card shows:
 - the title, folder, branch and number of prompts
 - **token usage**: a bar showing how full the context window is, plus output and input tokens. Subagents are included, and hovering shows the breakdown, including cache reads
 - the last message: Claude's reply, the permission request, or your own prompt (click it to expand)
-- PRs with their live state
-- links to artifacts, Notion, Linear, Figma and Google Docs
+- the session's own PRs, with their live state
+- its Linear ticket and pages: the ones it started from or created (artifacts, Notion, Figma, Google Docs)
 - the files the session wrote
+
+**The session's own things versus the rest.** A PR belongs to the session when the session created it, or when the PR's branch is the session's branch. A ticket or page belongs to it when it's in the session's first prompt, in the branch name (Linear), or the session created it. These are what cards show, and what decides the PR state. Tickets, PRs and pages the session only looked up or mentioned are listed in the details under **Also touched**. A long last message has a "Read the full message" link to the details.
 
 Each card has these buttons:
 - **Resume ▸** opens a new terminal window in the session's folder and runs `claude --resume <id>`.
