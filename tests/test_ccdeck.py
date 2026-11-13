@@ -671,3 +671,22 @@ def tearDownModule():
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DemoDataTest(unittest.TestCase):
+    """scripts/demo_data.py builds a HOME that ccdeck reads as the intended mix of states."""
+
+    def test_demo_home(self):
+        import subprocess
+        home = TMP / "demo-home"
+        shutil.rmtree(home, ignore_errors=True)
+        r = subprocess.run([sys.executable, str(ROOT / "scripts" / "demo_data.py"), str(home), "--pid", str(os.getpid())],
+                           capture_output=True, text=True, timeout=30)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        env = dict(os.environ, HOME=str(home), PATH=f"{home / 'bin'}:{os.environ['PATH']}", NO_COLOR="1")
+        out = subprocess.run([sys.executable, str(ROOT / "ccdeck"), "-a"], capture_output=True, text=True, env=env, timeout=30).stdout
+        for label in ("Permission needed", "Question for you", "Decision needed", "Error", "Working", "Parked"):
+            self.assertIn(label, out)
+        gh = subprocess.run([str(home / "bin" / "gh"), "pr", "view", "https://github.com/acme/dashboard/pull/212", "--json", "x"],
+                            capture_output=True, text=True)
+        self.assertEqual(json.loads(gh.stdout)["number"], 212)
