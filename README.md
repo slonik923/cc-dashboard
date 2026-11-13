@@ -43,6 +43,7 @@ The plugin adds these commands to Claude Code:
 | `/ccdeck:install` | Adds the background service (the dashboard starts at login) and the `ccdeck` terminal command |
 | `/ccdeck:done [note]` | Marks the current session done, with an optional note |
 | `/ccdeck:park [note]` | Sets the current session aside for later |
+| `/ccdeck:preview <PR>` | Tries an unreleased ccdeck PR or branch on your sessions, next to your dashboard (see below) |
 
 `/ccdeck:install` copies ccdeck to `~/.local/share/ccdeck`, and the service and command run from that copy. Nothing points at the plugin's versioned cache folder.
 
@@ -133,6 +134,24 @@ The terminal used for **Resume ▸**:
 
 Any other terminal works through `CCDECK_TERMINAL`, for example `CCDECK_TERMINAL="wezterm start --"`. macOS asks once whether ccdeck may control Terminal or iTerm.
 
+## Trying a change before it's released
+
+```bash
+ccdeck preview 16          # PR #16 of slonik923/ccdeck
+ccdeck preview my-branch   # a branch, tag or commit
+ccdeck preview ~/ccdeck    # a local checkout
+ccdeck preview stop
+```
+
+`preview` downloads that version and runs its dashboard on `http://localhost:7798`, next to your normal one. The header shows which version it is.
+- **Shared with your dashboard:** your real transcripts and the live states your hooks report.
+- **Its own:** caches, token and notifications, so it doesn't disturb your normal dashboard.
+- **Marks and notes:** it gets a copy of yours, and changes made in the preview aren't kept.
+
+Hooks keep running from your installed ccdeck, so a PR that changes the hooks only takes full effect after it's released.
+
+**Security.** A preview runs downloaded code on your machine. For PRs from forks, it refuses unless you pass `--trust`; read the PR first. Downloads use the GitHub CLI when it's installed, and are kept in `~/.claude/ccdeck-preview/` (the last five).
+
 ## Terminal
 
 ```text
@@ -145,6 +164,7 @@ ccdeck park 3          set aside               ccdeck unpark 3
 ccdeck note 3 text     attach a note
 ccdeck open            open the dashboard
 ccdeck serve           run the dashboard in the foreground (instead of the service)
+ccdeck preview 16      try PR #16 next to your dashboard (ccdeck preview stop)
 ```
 
 `3` is the row number from the last list. A prefix of the session id also works.

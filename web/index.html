@@ -63,6 +63,7 @@
 <span class="brand-mark"><svg class="i" aria-hidden="true"><use href="#i-peak"></use></svg><span class="brand-badge" id="needBadge" hidden></span></span>
 <span>ccdeck</span>
 <span class="host" id="host">localhost</span>
+<span class="previewtag" id="previewTag" hidden></span>
 </div>
 <span class="live" id="live" data-on="on" role="status"><span class="live-dot"></span><span id="liveText">Connecting</span><span class="live-text-long muted" id="liveSub"></span></span>
 <div class="menu-wrap" id="hintWrap" hidden></div>
@@ -617,7 +618,10 @@ function render() {
   const isOld = (s) => s.g === "closed" && s.k !== "parked" && now - s.ts > OLD_AFTER;
   const oldClosed = all.filter(isOld).length;
 
-  document.title = (needN ? `(${needN}) ` : "") + "ccdeck";
+  document.title = (needN ? `(${needN}) ` : "") + (data.preview ? "ccdeck preview" : "ccdeck");
+  $("previewTag").hidden = !data.preview;
+  $("previewTag").textContent = data.preview ? "Preview · " + data.preview : "";
+  $("previewTag").title = data.preview ? "A preview started with `ccdeck preview`. Notes and marks changed here aren't kept. Stop it with `ccdeck preview stop`." : "";
   setFavicon(needN, needN ? "#E9887D" : prN ? "#C393C2" : count("turn") ? "#10b981" : count("work") ? "#F0B44C" : "#10b981");
   $("needBadge").hidden = !needN || isOff; $("needBadge").textContent = needN;
   $("host").textContent = "localhost:" + data.port + " · v" + data.version;
