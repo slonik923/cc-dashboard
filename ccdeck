@@ -996,7 +996,8 @@ def peer_sessions():
     out = {}
     for f in (CLAUDE_DIR / "sessions").glob("*.json"):
         d = load_json(f, {})
-        if isinstance(d, dict) and d.get("sessionId") and pid_alive(d.get("pid"), d.get("procStart")):
+        # procStart is required: without it pid_alive accepts any process that reused the pid
+        if isinstance(d, dict) and d.get("sessionId") and d.get("procStart") and pid_alive(d.get("pid"), d["procStart"]):
             out[d["sessionId"]] = {"name": d.get("name"), "pid": d["pid"]}
     return out
 
@@ -1080,7 +1081,7 @@ def collect(include_all=False, days=DEFAULT_DAYS):
     peers = peer_sessions()
 
     resumed = resumed_ids(procs)
-    guessed_live = guess_live_sessions(sessions, hooks, procs, resumed)
+    guessed_live = guess_live_sessions(sessions, hooks, procs, resumed | set(peers))
 
     resolve_linear(sessions)
     rows, cutoff = [], time.time() - days * 86400
@@ -1095,7 +1096,7 @@ def collect(include_all=False, days=DEFAULT_DAYS):
         else:
             alive = sid in peers or sid in resumed or sid in guessed_live
             s["live_source"] = "guess"
-        if sid in resumed and not hook_live:
+        if (sid in resumed or sid in peers) and not hook_live:
             hook = None  # another process resumed it; the ended one's status (ended, permission) isn't the live one's
         s["alive"] = alive
         s["peer_name"] = (peers.get(sid) or {}).get("name")
