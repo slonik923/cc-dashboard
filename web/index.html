@@ -70,6 +70,7 @@
 <div class="hdr-tools">
 <button class="toggle" id="tDone" aria-pressed="false"><span class="switch"></span><span class="toggle-label">Show done</span><span class="toggle-count" id="cDone">0</span></button>
 <button class="toggle" id="tOld" aria-pressed="false"><span class="switch"></span><span class="toggle-label">Older closed</span><span class="toggle-count" id="cOld">0</span></button>
+<div class="menu-wrap"><button class="ibtn bellbtn" id="inboxBtn" aria-label="Notifications" aria-expanded="false" aria-haspopup="dialog"><svg class="i" aria-hidden="true"><use href="#i-bell"></use></svg><span class="brand-badge bell-badge" id="inboxBadge" hidden></span></button><div id="inboxHost"></div></div>
 <div class="menu-wrap"><button class="ibtn" id="legendBtn" aria-label="Legend: what the states mean" aria-expanded="false"><svg class="i" aria-hidden="true"><use href="#i-info"></use></svg></button><div id="legendHost"></div></div>
 </div>
 </div>
@@ -223,6 +224,7 @@ async function act(id, action, extra) {
       resume: j.focused ? "Switched to its " + j.focused + " tab" : "Opening a terminal" + (j.terminal ? " (" + j.terminal + ")" : "") + "…", done: "Marked done",
       undone: "Reopened", park: "Parked", unpark: "Unparked", note: "Note saved",
       open_folder: "Opening the folder…", refresh_prs: "PR states refreshed",
+      dismiss: "Dismissed", dismiss_all: "Notifications cleared",
     };
     toast(msgs[action] || "Done");
     etag = ""; load();
@@ -362,6 +364,7 @@ function deco(s) {
   return {
     raw: s, id: s.id, k, g: st.g, stateLabel: st.l, icon: st.i, title: s.display_title || "(untitled)",
     project: s.project || "?", cwd: s.cwd || "", branch: s.branch || "no branch", sid: s.id.slice(0, 8), name: s.peer_name || "", peerOpen: !!s.peer_open,
+    notif: inboxBy[s.id] || null,
     prompts: s.prompts || 0, ts: s.last_ts || 0, ago: agoShort(s.last_ts), run: !!s.alive,
     reason, code, msg, prs, links, issues, main, related, relatedN, long, cut: !!s.last_text_cut, files: (s.files || []).length, fileList: s.files || [],
     note: m.note || "", parked: !!m.parked, marked: !!m.done,
@@ -425,7 +428,8 @@ const loc = (s) => h("div", { class: "loc" }, ic("folder"), h("span", { class: "
   s.name ? h("span", { class: "mono", title: "Session name: what other sessions use to message it" }, "@" + s.name) : null, ic("branch"),
   h("span", { class: "mono" }, s.branch), h("span", { class: "sep" }, "·"), h("span", {}, s.prompts + (s.prompts === 1 ? " prompt" : " prompts")),
   h("span", { class: "sep" }, "·"), h("span", { class: "mono", title: s.id }, s.sid));
-const titleBtn = (s, cls) => h("button", { class: cls || "title-btn", "data-nav": s.id, "data-key": "t:" + s.id, onclick: () => openDrawer(s.id) }, s.title);
+const nmark = (s) => s.notif ? h("span", { class: "nmark", title: "Notification: " + s.notif.title }, ic("bell", "i-xs"), h("span", { class: "sr" }, "Notification waiting")) : null;
+const titleBtn = (s, cls) => h("button", { class: cls || "title-btn", "data-nav": s.id, "data-key": "t:" + s.id, onclick: () => openDrawer(s.id) }, s.title, nmark(s));
 
 function menu(s, up) {
   const items = [
@@ -497,7 +501,7 @@ function focusPanel(items) {
       items.map((s) => h("li", {}, h("button", { class: "nf-q", "aria-current": s.id === f.id ? "true" : "false", "data-nav": s.id, "data-key": "q:" + s.id,
         onclick: () => { ui.focus = s.id; render(); } },
         h("span", { class: "nf-q-ic" }, ic(s.icon, "i-sm")),
-        h("span", { class: "nf-q-main" }, h("span", { class: "nf-q-title" }, s.title), h("span", { class: "nf-q-sub" }, s.stateLabel + " · " + s.project)),
+        h("span", { class: "nf-q-main" }, h("span", { class: "nf-q-title" }, s.title, nmark(s)), h("span", { class: "nf-q-sub" }, s.stateLabel + " · " + s.project)),
         h("span", { class: "ago" }, s.ago))))),
     h("article", { class: "nf-main", "data-g": "need", "data-sid": f.id, "aria-label": f.stateLabel + ": " + f.title, "aria-live": "polite" },
       h("div", { class: "nf-swap", key: f.id },
@@ -612,6 +616,7 @@ function render() {
   const keep = document.activeElement && document.activeElement.dataset ? document.activeElement.dataset.key : null;
   const now = Date.now() / 1000;
   const isOff = offline();
+  inboxBy = Object.fromEntries((data.notifications || []).map((n) => [n.sid, n]));
   const all = data.sessions.map(deco);
   const q = ui.q.trim();
   const count = (k) => all.filter((s) => s.g === k).length;
@@ -698,7 +703,30 @@ function render() {
     h("span", {}, h("span", { class: "kbd" }, "."), " actions")));
   $("main").replaceChildren(...out);
   renderDrawer(all);
+  renderInbox();
   if (keep) focusKey(keep);
+}
+// Notifications you haven't acted on, one per session. ccdeck drops one when its session moves on (you replied,
+// answered the prompt, or it closed), when you click it on the desktop, or when you dismiss it here.
+let inboxBy = {};
+const inboxItem = (n) => h("li", { "data-nid": n.id },
+  ic("bell", "i-sm"),
+  h("button", { class: "ib-open", title: "Open this session", onclick: (e) => { e.stopPropagation(); ui.inbox = false; renderInbox(); openDrawer(n.sid); } },
+      h("span", { class: "rr-title" }, n.title || ""), h("span", { class: "ib-body" }, n.body || "")),
+  h("span", { class: "ago" }, agoShort(n.ts)),
+  h("button", { class: "ibtn ibtn-sm", "aria-label": "Dismiss notification", title: "Dismiss", onclick: (e) => { e.stopPropagation(); act("", "dismiss", { nid: n.id }); } }, ic("close", "i-sm")));
+function renderInbox() {
+  const items = (data && data.notifications) || [];
+  const badge = $("inboxBadge");
+  badge.hidden = !items.length;
+  badge.textContent = items.length > 99 ? "99+" : String(items.length);
+  $("inboxBtn").setAttribute("aria-label", items.length ? "Notifications: " + items.length + " not acted on" : "Notifications: none");
+  $("inboxBtn").setAttribute("aria-expanded", ui.inbox ? "true" : "false");
+  $("inboxHost").replaceChildren(ui.inbox ? h("div", { class: "inboxpop", role: "dialog", "aria-label": "Notifications", onclick: (e) => e.stopPropagation() },
+    h("div", { class: "inboxpop-head" }, h("h4", {}, "Notifications"), h("span", { class: "ghint" }, "Gone once you act on them"), h("span", { class: "grow" }),
+      items.length ? h("button", { class: "linkbtn", onclick: () => act("", "dismiss_all") }, "Clear all") : null),
+    items.length ? h("ul", { class: "rrlist inbox" }, items.map((n) => inboxItem(n)))
+      : h("p", { class: "inbox-empty" }, "Nothing is waiting on you.")) : "");
 }
 // PRs that ask for your review. They belong to colleagues, not to a session, so they get their own list.
 function reviewSection(items) {
@@ -753,7 +781,7 @@ function renderDrawer(all) {
   const host = $("drawerHost");
   const s = all.find((x) => x.id === ui.drawer);
   if (!s) { if (!ui.drawer || all.length) { host.replaceChildren(); if (ui.drawer && all.length) ui.drawer = ""; } return; }
-  const sig = JSON.stringify(s.raw) + "|" + offline();
+  const sig = JSON.stringify(s.raw) + "|" + JSON.stringify(s.notif) + "|" + offline();
   if (sig === drawerSig) return;
   const active = document.activeElement;
   if (active && active.id === "dr-note" && host.contains(active)) return; // don't clobber typing
@@ -785,6 +813,11 @@ function renderDrawer(all) {
           h("button", { class: "btn btn-ghost btn-sm", onclick: () => $("dr-note").focus() }, ic("note", "i-sm"), "Note"),
           h("button", { class: "btn btn-ghost btn-sm", onclick: () => act(s.id, s.marked ? "undone" : "done") }, ic("check", "i-sm"), s.marked ? "Reopen" : "Mark done"))),
       h("div", { class: "dr-body" },
+        s.notif ? h("section", { class: "dsec dnotif", "aria-labelledby": "dr-notif" },
+          h("div", { class: "dnotif-head" }, h("h3", { id: "dr-notif" }, ic("bell", "i-xs"), "Notification · " + agoShort(s.notif.ts)), h("span", { class: "grow" }),
+            h("button", { class: "btn btn-ghost btn-sm", onclick: () => act("", "dismiss", { nid: s.notif.id }) }, ic("close", "i-sm"), "Dismiss")),
+          h("p", { class: "dnotif-title" }, s.notif.title || ""),
+          s.notif.body ? h("div", { class: "msg md" }, md(s.notif.body.trim())) : null) : null,
         h("section", { class: "dsec" }, h("h3", {}, msgHead),
           s.cut ? h("p", { class: "cutnote" }, "This message is long. Its start is cut here; resume the session to read all of it.") : null,
           h("div", { class: "msg md" }, md((s.msg || s.reason || "No messages yet.").trim())),
@@ -835,12 +868,14 @@ function toggleOld() { ui.showOld = !ui.showOld; ls.set("showOld", ui.showOld); 
 $("tDone").addEventListener("click", toggleDone);
 $("tOld").addEventListener("click", toggleOld);
 $("legendBtn").addEventListener("click", (e) => { e.stopPropagation(); ui.legend = !ui.legend; renderLegend(); });
+$("inboxBtn").addEventListener("click", (e) => { e.stopPropagation(); ui.inbox = !ui.inbox; renderInbox(); });
 $("q").addEventListener("input", (e) => { ui.q = e.target.value; render(); });
 document.addEventListener("click", () => {
   let changed = false;
   if (ui.menu) { ui.menu = ""; changed = true; }
   if (ui.hint) { ui.hint = false; renderHint(); }
   if (ui.legend) { ui.legend = false; renderLegend(); }
+  if (ui.inbox) { ui.inbox = false; renderInbox(); }
   if (changed) render();
 });
 const sidOf = (el) => { const x = el && el.closest && el.closest("[data-sid],[data-nav]"); return x ? x.dataset.sid || x.dataset.nav : ""; };
@@ -849,6 +884,7 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") {
     if (ui.menu) { const id = ui.menu; ui.menu = ""; render(); focusKey("m:" + id); }
     else if (ui.drawer) closeDrawer();
+    else if (ui.inbox) { ui.inbox = false; renderInbox(); $("inboxBtn").focus(); }
     else if (ui.hint || ui.legend) { ui.hint = ui.legend = false; renderHint(); renderLegend(); }
     else if (t === $("q") && ui.q) { $("q").value = ""; ui.q = ""; render(); }
     return;

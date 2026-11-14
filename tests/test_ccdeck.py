@@ -760,6 +760,35 @@ class ServerTest(unittest.TestCase):
         except urllib.error.HTTPError as e:
             return e.code, e.read()
 
+    def test_inbox_keeps_only_what_wasnt_acted_on(self):
+        shutil.rmtree(cc.INBOX_DIR, ignore_errors=True)
+        rows = [{"id": "a", "state": "permission"}, {"id": "b", "state": "idle"}, {"id": "c", "state": "question"}]
+        na = cc.inbox_add("a", "permission", "Needs approval · a", "Bash: rm -rf build")
+        cc.inbox_add("b", "idle", "Your turn · b", "Done.")
+        cc.inbox_add("c", "question", "Question · c", "Which one?")
+        cc.inbox_add("gone", "idle", "Your turn · gone", "")
+        cc.inbox_sweep(rows)
+        self.assertEqual({d["sid"] for d in cc.inbox_items()}, {"a", "b", "c"})  # the gone session's is dropped
+        rows[1]["state"] = "working"  # you replied in b
+        rows[2]["state"] = "closed"   # c was closed
+        cc.inbox_sweep(rows)
+        self.assertEqual([d["id"] for d in cc.inbox_items()], [na])
+        na2 = cc.inbox_add("a", "permission", "Needs approval · a", "Bash: make deploy")
+        self.assertEqual([d["id"] for d in cc.inbox_items()], [na2])  # one per session, the newest
+
+        # through the dashboard, whose own sweep sees this server's sessions
+        shutil.rmtree(cc.INBOX_DIR, ignore_errors=True)
+        st = {x["id"]: x["state"] for x in json.loads(self.req("/api/sessions")[1])["sessions"]}
+        n1, n2 = cc.inbox_add("s-closed", st["s-closed"], "One", ""), cc.inbox_add("s-midtask", st["s-midtask"], "Two", "")
+        self.assertEqual(self.req("/api/action", token=False, data={"action": "dismiss", "nid": n1})[0], 403)
+        self.assertEqual(self.req("/api/action", data={"action": "dismiss", "nid": "../token"})[0], 200)  # ignored
+        self.assertTrue(cc.TOKEN_FILE.exists())
+        self.assertEqual(self.req("/api/action", data={"action": "dismiss", "nid": n1})[0], 200)
+        snap = json.loads(self.req("/api/sessions")[1])
+        self.assertEqual([n["id"] for n in snap["notifications"]], [n2])
+        self.assertEqual(self.req("/api/action", data={"action": "dismiss_all"})[0], 200)
+        self.assertEqual(cc.inbox_items(), [])
+
     def test_page_has_token(self):
         code, body = self.req("/", token=False)
         self.assertEqual(code, 200)
@@ -814,7 +843,7 @@ class ServerTest(unittest.TestCase):
             raise RuntimeError("no session bus")
         try:
             for click, sid in ((lambda *a: (True, "tok"), "s-closed"), (lambda *a: (False, None), "s-closed"),
-                               (lambda *a: (True, None), "gone"), (boom, "s-closed")):
+                               (lambda *a: (True, None), "gone"), (boom, "s-closed")):  # *a: title, body, urgent, wanted
                 cc.notification_click = click
                 sys.argv = ["ccdeck", "notify-click", sid, "--", "-title", "body"]
                 cc.main()
@@ -841,6 +870,42 @@ class ServerTest(unittest.TestCase):
             self.assertEqual(len(cmds), 1)
         finally:
             cc.gnome_terminal_window = saved
+
+
+class InboxClickTest(unittest.TestCase):
+    def test_the_inbox_keeps_the_whole_message(self):
+        long = "Should I roll back the canary?\n\n" + "Details. " * 200
+        cc.notify("Question · deploy", cc.one_line(long, 160), sid="s9", state="question", text=long)
+        (entry,) = [d for d in cc.inbox_items() if d["sid"] == "s9"]
+        self.assertEqual(entry["body"], long)  # CCDECK_NOTIFY=0 here: no popup, the entry is still kept
+        cc.inbox_clear(entry["id"])
+
+    def test_click_clears_the_entry_and_a_gone_entry_withdraws_the_popup(self):
+        saved = cc.peer_sessions, cc.focus_terminal, cc.notification_click, sys.argv
+        cc.peer_sessions = lambda: {}
+        cc.focus_terminal = lambda pid, token: None
+        seen = []
+        try:
+            nid = cc.inbox_add("s1", "idle", "Your turn · s1", "Done.")
+            def click(title, body, urgent, wanted):
+                seen.append(wanted())  # entry still there: keep showing it
+                return True, None
+            cc.notification_click = click
+            sys.argv = ["ccdeck", "notify-click", "s1", "--id", nid, "--", "t", "b"]
+            cc.main()
+            self.assertEqual(seen, [True])
+            self.assertFalse((cc.INBOX_DIR / f"{nid}.json").exists())  # clicking it is acting on it
+            nid = cc.inbox_add("s1", "idle", "Your turn · s1", "Done.")
+            def dismissed_elsewhere(title, body, urgent, wanted):
+                cc.inbox_clear(nid)  # e.g. you replied in the session
+                seen.append(wanted())
+                return False, None
+            cc.notification_click = dismissed_elsewhere
+            sys.argv = ["ccdeck", "notify-click", "s1", "--id", nid, "--", "t", "b"]
+            cc.main()
+            self.assertEqual(seen, [True, False])  # the helper withdraws the popup once wanted() is False
+        finally:
+            cc.peer_sessions, cc.focus_terminal, cc.notification_click, sys.argv = saved
 
 
 class NotificationSettingTest(unittest.TestCase):
