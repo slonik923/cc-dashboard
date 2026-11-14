@@ -1,6 +1,6 @@
 # ccdeck
 
-One Python file (`ccdeck`, standard library only) plus `web/`. Tests: `python3 -m unittest discover -s tests` (also run them with `CCDECK_NO_PROC=1`, the macOS code path). Bump `VERSION` in `ccdeck` and `.claude-plugin/plugin.json` together in every release.
+One Python file (`ccdeck`, standard library only, except the optional PyGObject import for clickable Linux notifications; see `.github/styleguide.md`) plus `web/`. Tests: `python3 -m unittest discover -s tests` (also run them with `CCDECK_NO_PROC=1`, the macOS code path). Bump `VERSION` in `ccdeck` and `.claude-plugin/plugin.json` together in every release.
 
 ## PR screenshots
 

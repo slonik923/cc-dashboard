@@ -13,7 +13,7 @@ You get a live dashboard in the browser at `http://localhost:7799`, served by a 
 
 ![Dashboard](docs/dashboard.png)
 
-`ccdeck` is one Python 3.9+ file plus one HTML page, using only the standard library. It reads the transcripts Claude Code already writes to `~/.claude/projects/` and never modifies them. PR states come from the GitHub CLI (`gh`) when it's installed.
+`ccdeck` is one Python 3.9+ file plus one HTML page, using only the standard library. The one optional extra is PyGObject (`gi`, preinstalled on GNOME desktops), which makes Linux notifications clickable. It reads the transcripts Claude Code already writes to `~/.claude/projects/` and never modifies them. PR states come from the GitHub CLI (`gh`) when it's installed.
 
 ## Install
 
@@ -120,6 +120,7 @@ Each card shows:
 
 Each card has these buttons:
 - **Resume ▸** opens a new terminal window in the session's folder and runs `claude --resume <id>`.
+- **Go to tab** replaces it while the session is open: it switches to the terminal tab the session runs in, instead of starting a second `claude` on it. This works in gnome-terminal (X11 and Wayland), tmux (window and pane), and iTerm2 and Terminal.app on macOS. In other terminals the dashboard says where the session is open and doesn't start a second one.
 - **Copy cmd** copies that same command.
 - **Folder** opens the session's folder in the file manager.
 - **↻ PRs** re-checks the PR states now.
@@ -157,7 +158,7 @@ ccdeck serve           run the dashboard in the foreground (instead of the servi
 - **The server** listens only on `127.0.0.1`. The API needs a random token, stored in `~/.claude/ccdeck/token`, which only the dashboard page receives. Requests whose `Host` header isn't localhost are rejected. Together, these stop other websites from reading your sessions or opening terminals.
 - **Token usage** comes from the `usage` that Claude Code saves with each response. Each response is counted once, even though it's saved on several entries. The context bar uses the size of the latest request against the model's window: 1M for current models, 200K for Claude Haiku 4.5 and older models. To use a different limit, set `CCDECK_CONTEXT_LIMIT`. Tokens are shown rather than dollars, because many people use Claude Code on a subscription and prices differ by model.
 - **Dashboard autostart.** With the plugin, the `SessionStart` hook starts `ccdeck serve` in the background when nothing answers on the port; it logs to `~/.claude/ccdeck/serve.log`. It doesn't do this when the systemd service or launchd agent is installed. To turn it off, set `CCDECK_AUTOSTART=0`.
-- **Notifications** appear when a session moves into *Needs you*, *PRs to fix* or *Your turn*. They use `notify-send` on Linux and Notification Center (through `osascript`) on macOS. To turn them off, set `CCDECK_NOTIFY=0`.
+- **Notifications** appear when a session moves into *Needs you*, *PRs to fix* or *Your turn*. They use `notify-send` on Linux and Notification Center (through `osascript`) on macOS. On Linux, clicking one goes to that session's terminal tab and raises its window, in gnome-terminal (or selects its tmux pane). That needs PyGObject (`python3-gi`, preinstalled on GNOME); without it, and on macOS, notifications still appear but clicking them does nothing. Turn them off or on with `ccdeck notifications off|on`, or one channel at a time with `ccdeck notifications desktop off` (desktop is the only channel so far). The setting lives in ccdeck's `config.json`; `CCDECK_NOTIFY=0` turns them all off whatever it says.
 - **Running or closed.** A session counts as running in one of two ways:
   - **Reported by hooks:** its hooks recorded the Claude process, and that process is still alive with the same start time.
   - **Guessed:** for sessions no hook has reported on (for example, ones started before you installed the plugin), N `claude` processes in a folder mark that folder's N most recent sessions as open. A `claude --resume <id>` process marks exactly that session.
@@ -184,6 +185,20 @@ python3 -m unittest discover -s tests -v
 The tests run against a throwaway `HOME` with synthetic transcripts and a fake `gh`.
 
 **Screenshots for PRs.** `scripts/demo_data.py` writes a demo `HOME` of made-up sessions, so you can run any version of ccdeck on the same data: `HOME=/tmp/demo PATH=/tmp/demo/bin:$PATH python3 ccdeck serve --port 7800`. PRs that change the dashboard show it before and after on that data; `CLAUDE.md` has the details.
+
+**AI review.** Pull requests get automatic reviews from CodeRabbit (free for public repos). Its settings are in `.coderabbit.yaml`, and the rules it reviews against are in `.github/styleguide.md`. Ask for a re-review with `@coderabbitai review`.
+
+**Merging into `main`** needs all of these:
+- the CI jobs pass;
+- every review conversation is resolved, so an open comment (critical or not) blocks the merge;
+- the **AI review gate** check passes (`.github/workflows/ai-review.yml`): CodeRabbit isn't requesting changes;
+- the **CodeRabbit** check passes, which means CodeRabbit has reviewed the latest commit.
+
+One gap: when CodeRabbit is rate-limited or skips a review, its check ends neutral or skipped, and GitHub counts both as passing. Before merging, look at the CodeRabbit check on the PR's last commit; if it says skipped or rate-limited, comment `@coderabbitai review` and wait for it. The gate can't enforce this: CodeRabbit's check finishes after the gate runs and posts no review when it finds nothing, so nothing would re-run a stricter gate.
+
+The rules are in `.github/rulesets/main.json`. GitHub applies them only after they're imported once, under Settings → Rules → Rulesets → New ruleset → Import a ruleset.
+
+**What the gate is for.** It's a safety net for the maintainer's own PRs and agents' PRs, not a control against a hostile PR. The gate runs the workflow from the PR's branch, so a PR could replace it with a job that passes under the same name. That's accepted here: GitHub doesn't run workflows from a first-time contributor's fork without approval, every PR is merged by hand, and a change under `.github/workflows/` shows in the diff. If outside contributions grow, move the gate to a trusted evaluator (`pull_request_target` and `workflow_run`, which run from `main`) that sets its own commit status and fails PRs that change `.github/workflows/`.
 
 **Releasing.** Claude Code updates an installed plugin only when the `version` in `.claude-plugin/plugin.json` changes. Bump it, and `VERSION` in `ccdeck` with it, in every release; CI checks that the two match. Users then get it by running `/plugin marketplace update ccdeck` and updating ccdeck from the `/plugin` menu (or reinstalling it).
 

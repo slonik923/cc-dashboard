@@ -220,7 +220,7 @@ async function act(id, action, extra) {
     const j = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(j.error || "HTTP " + r.status);
     const msgs = {
-      resume: "Opening a terminal" + (j.terminal ? " (" + j.terminal + ")" : "") + "…", done: "Marked done",
+      resume: j.focused ? "Switched to its " + j.focused + " tab" : "Opening a terminal" + (j.terminal ? " (" + j.terminal + ")" : "") + "…", done: "Marked done",
       undone: "Reopened", park: "Parked", unpark: "Unparked", note: "Note saved",
       open_folder: "Opening the folder…", refresh_prs: "PR states refreshed",
     };
@@ -361,7 +361,7 @@ function deco(s) {
   const m = s.mark || {};
   return {
     raw: s, id: s.id, k, g: st.g, stateLabel: st.l, icon: st.i, title: s.display_title || "(untitled)",
-    project: s.project || "?", cwd: s.cwd || "", branch: s.branch || "no branch", sid: s.id.slice(0, 8),
+    project: s.project || "?", cwd: s.cwd || "", branch: s.branch || "no branch", sid: s.id.slice(0, 8), name: s.peer_name || "", peerOpen: !!s.peer_open,
     prompts: s.prompts || 0, ts: s.last_ts || 0, ago: agoShort(s.last_ts), run: !!s.alive,
     reason, code, msg, prs, links, issues, main, related, relatedN, long, cut: !!s.last_text_cut, files: (s.files || []).length, fileList: s.files || [],
     note: m.note || "", parked: !!m.parked, marked: !!m.done,
@@ -389,7 +389,7 @@ function prView(p) {
 }
 function matches(s, q) {
   if (!q) return true;
-  const hay = [s.title, s.project, s.branch, s.note, s.id, ...s.issues.map((i) => i.key + " " + i.title),
+  const hay = [s.title, s.name, s.project, s.branch, s.note, s.id, ...s.issues.map((i) => i.key + " " + i.title),
     ...s.links.map((l) => l.full)].join(" ").toLowerCase();
   return q.toLowerCase().split(/\s+/).every((w) => hay.includes(w));
 }
@@ -421,9 +421,10 @@ function chipRow(s, max, withTitle) {
 }
 const linkChip = (l, full) => h("a", { class: "lchip", href: l.url, target: "_blank", rel: "noopener noreferrer", title: l.url }, ic(l.icon), full ? l.full : l.label);
 const noteEl = (s) => s.note ? h("span", { class: "note" }, ic("note"), s.note) : null;
-const loc = (s, withSid) => h("div", { class: "loc" }, ic("folder"), h("span", { class: "mono", title: s.cwd }, s.project), ic("branch"),
+const loc = (s) => h("div", { class: "loc" }, ic("folder"), h("span", { class: "mono", title: s.cwd }, s.project),
+  s.name ? h("span", { class: "mono", title: "Session name: what other sessions use to message it" }, "@" + s.name) : null, ic("branch"),
   h("span", { class: "mono" }, s.branch), h("span", { class: "sep" }, "·"), h("span", {}, s.prompts + (s.prompts === 1 ? " prompt" : " prompts")),
-  withSid ? [h("span", { class: "sep" }, "·"), h("span", { class: "mono" }, s.sid)] : null);
+  h("span", { class: "sep" }, "·"), h("span", { class: "mono", title: s.id }, s.sid));
 const titleBtn = (s, cls) => h("button", { class: cls || "title-btn", "data-nav": s.id, "data-key": "t:" + s.id, onclick: () => openDrawer(s.id) }, s.title);
 
 function menu(s, up) {
@@ -450,7 +451,8 @@ function menuBtn(s, up, label) {
       onclick: (e) => { e.stopPropagation(); ui.menu = open ? "" : s.id; render(); if (!open) focusKey("mi:" + s.id + ":0"); } }, ic("more", "i-sm")),
     open ? menu(s, up) : null);
 }
-const resumeBtn = (s, cls, label, size) => h("button", { class: cls, "data-key": "r:" + s.id + ":" + (label || ""), onclick: () => act(s.id, "resume") }, ic("terminal", size), label || "Resume");
+const resumeHint = (s) => s.peerOpen ? "Go to tab switches to its terminal." : "Resume opens the session in a new terminal window.";
+const resumeBtn = (s, cls, label, size) => h("button", { class: cls, "data-key": "r:" + s.id + ":" + (label || ""), onclick: () => act(s.id, "resume") }, ic("terminal", size), s.peerOpen ? "Go to tab" : label || "Resume");
 const copyBtn = (s, big) => big
   ? h("button", { class: "btn" + (big === "lg" ? " btn-lg" : ""), onclick: () => copy(s.resumeCmd, "Resume command") }, ic("copy", big === "lg" ? null : "i-sm"), "Copy command")
   : h("button", { class: "ibtn ibtn-sm", "aria-label": "Copy resume command", title: "Copy resume command", onclick: () => copy(s.resumeCmd, "Resume command") }, ic("copy", "i-sm"));
@@ -758,8 +760,8 @@ function renderDrawer(all) {
   drawerSig = sig;
   const scroll = host.querySelector(".drawer") ? host.querySelector(".drawer").scrollTop : 0;
   const msgHead = s.g === "need" ? s.stateLabel : "Claude’s last message";
-  const hint = s.k === "perm" ? "Approve or deny in the terminal. Resume opens the session in a new terminal window."
-    : s.k === "question" || s.k === "decision" ? "Answer in the terminal. Resume opens the session in a new terminal window."
+  const hint = s.k === "perm" ? "Approve or deny in the terminal. " + resumeHint(s)
+    : s.k === "question" || s.k === "decision" ? "Answer in the terminal. " + resumeHint(s)
     : s.k === "error" ? "Resume and type “continue” to retry from the last step." + (s.pct >= 80 ? " Context is at " + s.pct + "%, so consider /compact first." : "") : "";
   const u = s.u, sub = s.sub, inOf = (x) => (x.input || 0) + (x.cache_write || 0) + (x.cache_read || 0);
   const subUsed = Object.values(sub).some((v) => v);
@@ -809,7 +811,8 @@ function renderDrawer(all) {
             h("tbody", {}, tokRows.map((r) => h("tr", {}, h("td", {}, r[0]), h("td", { class: "n" }, tok(r[1])), h("td", { class: "n" }, tok(r[2])), h("td", { class: "n" }, tok(r[3]))))))),
         h("section", { class: "dsec" }, h("h3", {}, "Your note"), h("label", { class: "sr", for: "dr-note" }, "Note for this session"), note),
         h("section", { class: "dsec" }, h("h3", {}, "Session"), h("dl", { class: "dl" },
-          h("dt", {}, "Session id"), h("dd", {}, s.id), h("dt", {}, "Folder"), h("dd", {}, s.raw.cwd_short || s.cwd),
+          h("dt", {}, "Session id"), h("dd", {}, s.id),
+          s.name ? [h("dt", {}, "Name"), h("dd", { class: "mono" }, s.name)] : null, h("dt", {}, "Folder"), h("dd", {}, s.raw.cwd_short || s.cwd),
           h("dt", {}, "Branch"), h("dd", {}, s.branch), h("dt", {}, "Prompts"), h("dd", {}, s.prompts),
           h("dt", {}, "Model"), h("dd", {}, s.raw.model || "—"),
           h("dt", {}, "Running"), h("dd", {}, (s.run ? "Yes" : "No") + " · " + (s.raw.live_source === "hook"

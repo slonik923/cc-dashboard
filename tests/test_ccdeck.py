@@ -360,6 +360,139 @@ class HookTest(unittest.TestCase):
         self.run_hook({"session_id": sid, "hook_event_name": "SessionEnd", "reason": "exit"})
         self.assertEqual(by_id(cc.collect(True, 10 ** 6))[sid]["state"], "closed")
 
+        # a second process resumed the same session and is still open
+        saved = cc.running_claude_processes
+        cc.running_claude_processes = lambda: [(1, str(WORK), ["claude", "--resume", sid])]
+        try:
+            self.assertTrue(by_id(cc.collect(True, 10 ** 6))[sid]["alive"])
+        finally:
+            cc.running_claude_processes = saved
+
+    def test_resumed_session_isnt_held_back_by_the_ended_hook(self):
+        build_fixtures()
+        sid = "s-midtask"  # its transcript ends on a tool entry, so an open session isn't idle
+        self.run_hook({"session_id": sid, "hook_event_name": "UserPromptSubmit", "cwd": str(WORK)})
+        self.run_hook({"session_id": sid, "hook_event_name": "SessionEnd", "reason": "exit"})
+        saved = cc.running_claude_processes
+        cc.running_claude_processes = lambda: [(2, str(WORK), ["claude", "--resume", sid])]
+        try:
+            row = by_id(cc.collect(True, 10 ** 6))[sid]
+            self.assertTrue(row["alive"])
+            self.assertNotEqual(row["state"], "idle")  # what the ended hook's status would give
+            self.assertEqual(row["state"], cc.classify(dict(row), None, True))  # as if there were no hook record
+        finally:
+            cc.running_claude_processes = saved
+
+    def test_peer_registry_gives_name_and_liveness(self):
+        build_fixtures()
+        reg = cc.CLAUDE_DIR / "sessions"
+        reg.mkdir(parents=True, exist_ok=True)
+        me = os.getpid()
+        (reg / f"{me}.json").write_text(json.dumps({"pid": me, "procStart": cc.proc_start_time(me),
+                                                    "sessionId": "s-closed", "name": "work-2d"}))
+        (reg / "1.json").write_text(json.dumps({"pid": 1, "procStart": "stale", "sessionId": "s-midtask", "name": "old"}))
+        try:
+            rows = by_id(cc.collect(True, 10 ** 6))
+            self.assertEqual((rows["s-closed"]["peer_name"], rows["s-closed"]["alive"]), ("work-2d", True))
+            self.assertIsNone(rows["s-midtask"]["peer_name"])  # reused pid: not that session any more
+        finally:
+            shutil.rmtree(reg)
+
+    def test_registry_record_without_start_time_is_ignored(self):
+        build_fixtures()
+        reg = cc.CLAUDE_DIR / "sessions"
+        reg.mkdir(parents=True, exist_ok=True)
+        me = os.getpid()
+        (reg / f"{me}.json").write_text(json.dumps({"pid": me, "sessionId": "s-closed", "name": "work-2d"}))
+        try:
+            self.assertEqual(cc.peer_sessions(), {})  # the pid is alive, but it may not be that session any more
+        finally:
+            shutil.rmtree(reg)
+
+    def test_malformed_registry_records_are_skipped(self):
+        reg = cc.CLAUDE_DIR / "sessions"
+        reg.mkdir(parents=True, exist_ok=True)
+        me, start = os.getpid(), cc.proc_start_time(os.getpid())
+        for i, rec in enumerate(({"pid": me, "procStart": start, "sessionId": ["A"]},
+                                 {"pid": me, "procStart": start, "sessionId": ""},
+                                 {"pid": str(me), "procStart": start, "sessionId": "B"},
+                                 [1, 2])):
+            (reg / f"{i}.json").write_text(json.dumps(rec))
+        (reg / "ok.json").write_text(json.dumps({"pid": me, "procStart": start, "sessionId": "C", "name": {"x": 1}}))
+        try:
+            self.assertEqual(cc.peer_sessions(), {"C": {"name": None, "pid": me, "pids": [me]}})
+        finally:
+            shutil.rmtree(reg)
+
+    def test_two_processes_on_one_session_both_count(self):
+        reg = cc.CLAUDE_DIR / "sessions"
+        reg.mkdir(parents=True, exist_ok=True)
+        me, parent = os.getpid(), os.getppid()
+        for pid in (me, parent):
+            (reg / f"{pid}.json").write_text(json.dumps({"pid": pid, "procStart": cc.proc_start_time(pid), "sessionId": "B"}))
+        try:
+            self.assertEqual(sorted(cc.peer_sessions()["B"]["pids"]), sorted([me, parent]))
+        finally:
+            shutil.rmtree(reg)
+
+    def test_a_hook_whose_process_now_runs_another_session_is_stale(self):
+        # this process wrote A's hook (asking for permission), then /resume switched it to B
+        build_fixtures()
+        a, b, me = "s-midtask", "s-closed", os.getpid()
+        self.run_hook({"session_id": a, "hook_event_name": "UserPromptSubmit", "cwd": str(WORK)})
+        self.run_hook({"session_id": a, "hook_event_name": "Notification",
+                       "notification_type": "permission_prompt", "message": "Claude needs your permission to use Bash"})
+        state_file = cc.STATE_DIR / f"{a}.json"
+        st = json.loads(state_file.read_text())
+        st["pid"], st["pid_start"] = me, cc.proc_start_time(me)
+        state_file.write_text(json.dumps(st))
+        saved = cc.peer_sessions, cc.running_claude_processes
+        cc.peer_sessions = lambda: {b: {"name": "b", "pid": me, "pids": [me]}}
+        cc.running_claude_processes = lambda: [(me, str(WORK), ["claude"])]
+        try:
+            rows = by_id(cc.collect(True, 10 ** 6))
+            self.assertTrue(rows[b]["alive"])
+            self.assertFalse(rows[a]["alive"])
+            self.assertNotEqual(rows[a]["state"], "permission")
+        finally:
+            cc.peer_sessions, cc.running_claude_processes = saved
+            state_file.unlink(missing_ok=True)  # it names this live process: don't leak it into other tests
+
+    def test_a_process_that_switched_sessions_counts_once(self):
+        # pid 1 started with --resume A, then switched to B (/resume); pid 2 runs hookless C in the same folder
+        build_fixtures()
+        saved = cc.peer_sessions, cc.running_claude_processes
+        cc.peer_sessions = lambda: {"s-closed": {"name": "b", "pid": 1, "pids": [1]}}
+        cc.running_claude_processes = lambda: [(1, str(WORK), ["claude", "--resume", "s-midtask"]), (2, str(WORK), ["claude"])]
+        try:
+            rows = by_id(cc.collect(True, 10 ** 6))
+            self.assertTrue(rows["s-closed"]["alive"])     # B: the registry says pid 1 runs it
+            self.assertFalse(rows["s-midtask"]["alive"])   # A: pid 1's stale --resume argument
+            live = [k for k, r in rows.items() if r["alive"]]
+            self.assertEqual(len(live), 2, live)           # pid 2's session is still guessed open
+        finally:
+            cc.peer_sessions, cc.running_claude_processes = saved
+
+    def test_resumed_elsewhere_drops_the_ended_processs_permission(self):
+        build_fixtures()
+        sid = "s-closed"
+        self.run_hook({"session_id": sid, "hook_event_name": "UserPromptSubmit", "cwd": str(WORK)})
+        self.run_hook({"session_id": sid, "hook_event_name": "Notification",
+                       "notification_type": "permission_prompt", "message": "Claude needs your permission to use Bash"})
+        state_file = cc.STATE_DIR / f"{sid}.json"
+        st = json.loads(state_file.read_text())
+        st["pid"], st["pid_start"] = 1, "gone"  # the process that asked has ended
+        state_file.write_text(json.dumps(st))
+        saved = cc.running_claude_processes
+        cc.running_claude_processes = lambda: [(2, str(WORK), ["claude", "--resume", sid])]
+        try:
+            row = by_id(cc.collect(True, 10 ** 6))[sid]
+            self.assertTrue(row["alive"])
+            self.assertNotEqual(row["state"], "permission")
+            self.assertIsNone(row["hook_message"])
+        finally:
+            cc.running_claude_processes = saved
+
     def test_bad_payloads_ignored(self):
         for p in ([1], "x", {"session_id": "../../etc"}, {}):
             self.run_hook(p)
@@ -642,6 +775,94 @@ class ServerTest(unittest.TestCase):
         self.assertEqual({s["id"]: s for s in snap["sessions"]}["s-closed"]["mark"]["note"], "QA")
         self.req("/api/action", data={"id": "s-closed", "action": "note", "text": ""})
 
+    def test_resume_of_an_open_session_never_starts_a_second_one(self):
+        saved = cc.peer_sessions, cc.focus_terminal, cc.open_terminal
+        opened = []
+        cc.peer_sessions = lambda: {"s-closed": {"name": "work-2d", "pid": 1, "pids": [1]}}
+        cc.open_terminal = lambda *a: opened.append(a) or "xterm"
+        try:
+            cc.focus_terminal = lambda pid: "gnome-terminal"
+            code, body = self.req("/api/action", data={"id": "s-closed", "action": "resume"})
+            self.assertEqual((code, json.loads(body)["focused"]), (200, "gnome-terminal"))
+            cc.focus_terminal = lambda pid: None
+            code, body = self.req("/api/action", data={"id": "s-closed", "action": "resume"})
+            self.assertEqual(code, 409)
+            self.assertIn("@work-2d", json.loads(body)["error"])
+            self.assertEqual(opened, [])
+        finally:
+            cc.peer_sessions, cc.focus_terminal, cc.open_terminal = saved
+
+    def test_notification_click_goes_to_the_sessions_tab(self):
+        saved = cc.peer_sessions, cc.focus_terminal, cc.notification_click, sys.argv
+        focused = []
+        cc.peer_sessions = lambda: {"s-closed": {"name": "work-2d", "pid": 42, "pids": [42]}}
+        cc.focus_terminal = lambda pid, token: focused.append((pid, token))
+        def boom(*a):
+            raise RuntimeError("no session bus")
+        try:
+            for click, sid in ((lambda *a: (True, "tok"), "s-closed"), (lambda *a: (False, None), "s-closed"),
+                               (lambda *a: (True, None), "gone"), (boom, "s-closed")):
+                cc.notification_click = click
+                sys.argv = ["ccdeck", "notify-click", sid, "--", "-title", "body"]
+                cc.main()
+            self.assertEqual(focused, [(42, "tok")])
+        finally:
+            cc.peer_sessions, cc.focus_terminal, cc.notification_click, sys.argv = saved
+
+    def test_activation_token_goes_to_gnome_terminal_first(self):
+        saved = cc.gnome_terminal_window
+        cc.gnome_terminal_window = lambda: ("/org/gnome/Terminal/window/3", 2)
+        env = {"GNOME_TERMINAL_SCREEN": "/org/gnome/Terminal/screen/" + "a" * 8 + "_" + "b" * 4 + "_" + "c" * 4 + "_" + "d" * 4 + "_" + "e" * 12}
+        try:
+            if not shutil.which("gdbus"):
+                self.skipTest("needs gdbus")
+            (label, cmds), = cc.focus_commands(env, None, "gnome-shell//1-2-host_TIME3")
+            self.assertEqual(label, "gnome-terminal")
+            self.assertEqual(cmds[0][cmds[0].index("-o") + 1], "/org/gnome/Terminal/window/3")
+            self.assertIn("<'gnome-shell//1-2-host_TIME3'>", cmds[0][-1])
+            self.assertEqual(cmds[0][cmds[0].index("--") + 1:-1], ["active-tab", "<2>"])  # the tab already active: no change
+            self.assertIn("ActivateResult", " ".join(cmds[1]))
+            (_, cmds), = cc.focus_commands(env, None, "x'] evil")  # not token-shaped: no window call
+            self.assertEqual(len(cmds), 1)
+            (_, cmds), = cc.focus_commands(env, None)
+            self.assertEqual(len(cmds), 1)
+        finally:
+            cc.gnome_terminal_window = saved
+
+
+class NotificationSettingTest(unittest.TestCase):
+    def setUp(self):
+        self.env = os.environ.pop("CCDECK_NOTIFY", None)
+        cc.CONFIG_FILE.unlink(missing_ok=True)
+
+    def tearDown(self):
+        os.environ["CCDECK_NOTIFY"] = self.env or "0"
+        cc.CONFIG_FILE.unlink(missing_ok=True)
+
+    def run_cmd(self, *words):
+        cc.cmd_notifications(type("A", (), {"words": list(words)}))
+
+    def test_on_off_per_channel_and_env_override(self):
+        self.assertTrue(cc.notify_enabled("desktop"))  # default on
+        self.run_cmd("desktop", "off")
+        self.assertFalse(cc.notify_enabled("desktop"))
+        self.run_cmd("on")  # all channels
+        self.assertTrue(cc.notify_enabled("desktop"))
+        os.environ["CCDECK_NOTIFY"] = "0"
+        self.assertFalse(cc.notify_enabled("desktop"))
+        with self.assertRaises(SystemExit):
+            self.run_cmd("pager", "on")
+        with self.assertRaises(SystemExit):
+            self.run_cmd("maybe")
+
+    def test_bad_config_values_count_as_defaults(self):
+        for bad in ({"notifications": None}, {"notifications": [1]}, [1, 2]):
+            cc.CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
+            cc.CONFIG_FILE.write_text(json.dumps(bad))
+            self.assertTrue(cc.notify_enabled("desktop"))
+            self.run_cmd("desktop", "off")  # repairs it
+            self.assertFalse(cc.notify_enabled("desktop"))
+
 
 class PsProcessTest(unittest.TestCase):
     """The macOS code path (no /proc): process facts from one cached `ps` snapshot."""
@@ -678,15 +899,37 @@ class PsProcessTest(unittest.TestCase):
         self.assertFalse(cc.is_claude_cmd(["/bin/zsh"]))
 
 
+class ResumedIdsTest(unittest.TestCase):
+    def test_only_the_resume_argument_counts(self):
+        procs = [(1, "/w", ["claude", "--resume", "a"]), (2, "/w", ["claude", "-r", "b"]),
+                 (3, "/w", ["claude", "--resume=c"]), (4, "/w", ["claude", "-p", "look at session d and --resume"]),
+                 (5, "/w", ["claude", "summarize", "e"]), (6, "/w", ["claude", "--resume"])]
+        self.assertEqual(cc.resumed_ids(procs), {"a", "b", "c"})
+
+
 class GuessLiveTest(unittest.TestCase):
     def test_n_processes_mark_n_newest_sessions_open(self):
         mk = lambda sid, ts: {"id": sid, "cwd": "/w/app", "last_ts": ts}
         sessions = {k: mk(k, ts) for k, ts in [("old", 1), ("mid", 2), ("new", 3), ("resumed", 0)]}
         procs = [(1, "/w/app", ["claude"]), (2, "/w/app", ["claude"]), (3, "/w/app", ["claude", "--resume", "resumed"])]
-        live = cc.guess_live_sessions(sessions, {}, procs, "claude --resume resumed")
+        live = cc.guess_live_sessions(sessions, {}, procs, {"resumed"})
         self.assertEqual(live, {"new", "mid"})  # 3 processes, one of them is the resumed session
         hooks = {"new": {"pid": os.getpid(), "pid_start": cc.proc_start_time(os.getpid())}}
-        self.assertEqual(cc.guess_live_sessions(sessions, hooks, procs, "claude --resume resumed"), {"mid"})
+        self.assertEqual(cc.guess_live_sessions(sessions, hooks, procs, {"resumed"}), {"mid"})
+
+    def test_a_switched_process_takes_one_slot(self):
+        # pid P ran A (its hook still names P), then /resume switched it to B (the registry names P);
+        # hookless C runs in a second process in the same folder
+        me, start = os.getpid(), cc.proc_start_time(os.getpid())
+        sessions = {k: {"id": k, "cwd": "/w/app", "last_ts": ts} for k, ts in [("A", 1), ("B", 2), ("C", 3)]}
+        hooks = {"A": {"pid": me, "pid_start": start}}
+        procs = [(me, "/w/app", ["claude"]), (2, "/w/app", ["claude"])]
+        self.assertEqual(cc.guess_live_sessions(sessions, hooks, procs, {"B"}, {me}), {"C"})
+
+    def test_registry_sessions_use_up_their_process(self):
+        # registry session A is open in /w/app; B is newer and closed: one process, so only A
+        sessions = {"A": {"id": "A", "cwd": "/w/app", "last_ts": 1}, "B": {"id": "B", "cwd": "/w/app", "last_ts": 2}}
+        self.assertEqual(cc.guess_live_sessions(sessions, {}, [(1, "/w/app", ["claude"])], {"A"}), set())
 
 
 class MacDesktopTest(unittest.TestCase):
@@ -697,6 +940,49 @@ class MacDesktopTest(unittest.TestCase):
         i = cc.mac_terminal_command("/tmp", ["claude"], "iterm")
         self.assertIn('tell application "iTerm"', i)
         self.assertTrue(any("write text" in x for x in i))
+
+    def test_focus_commands(self):
+        gnome = {"GNOME_TERMINAL_SCREEN": "/org/gnome/Terminal/screen/ecdaf156_8be8_4402_9d37_193ec38ead77"}
+        saved = cc.shutil.which
+        cc.shutil.which = lambda b: "/usr/bin/" + b
+        try:
+            (label, [cmd]), = cc.focus_commands(gnome, None)
+            self.assertEqual(label, "gnome-terminal")
+            self.assertIn("ecdaf156-8be8-4402-9d37-193ec38ead77", cmd)
+            self.assertEqual(cc.focus_commands({"GNOME_TERMINAL_SCREEN": "/org/gnome/Terminal/screen/x; rm -rf"}, None), [])
+            self.assertEqual(cc.focus_commands({}, None), [])
+            out = cc.focus_commands(dict(gnome, TMUX="/tmp/tmux-1000/default,123,0", TMUX_PANE="%7"), None)
+        finally:
+            cc.shutil.which = saved
+        self.assertEqual([l for l, _ in out], ["tmux"])  # a pane's GNOME_TERMINAL_SCREEN is the tmux server's
+        cc.shutil.which = lambda b: None if b == "tmux" else "/usr/bin/" + b
+        try:  # no tmux to reach the pane: don't fall back to the tab the tmux server started in
+            self.assertEqual(cc.focus_commands(dict(gnome, TMUX_PANE="%7"), None), [])
+        finally:
+            cc.shutil.which = saved
+        self.assertEqual(out[0][1][1], ["tmux", "-S", "/tmp/tmux-1000/default", "select-window", "-t", "%7"])
+
+    def test_tmux_pane_from_tty_without_proc_and_detached_sessions(self):
+        fake = FAKE_GH.parent / "tmux"
+        log = TMP / "tmux.log"
+        saved = cc.USE_PROC, cc.IS_MAC, cc.proc_tty
+        cc.USE_PROC, cc.IS_MAC, cc.proc_tty = False, False, lambda pid: "/dev/ttys004"
+        try:
+            for attached, expected in (("1", "tmux"), ("0", None)):
+                fake.write_text(f"""#!/bin/sh
+echo "$@" >> {log}
+case "$1" in
+  list-panes) printf '/dev/ttys003 %%5\n/dev/ttys004 %%6\n' ;;
+  display-message) echo {attached} ;;
+esac
+""")
+                fake.chmod(0o755)
+                log.unlink(missing_ok=True)
+                self.assertEqual(cc.focus_terminal(123), expected)
+                self.assertIn("display-message -p -t %6", log.read_text())  # the pane that owns the tty
+        finally:
+            cc.USE_PROC, cc.IS_MAC, cc.proc_tty = saved
+            fake.unlink(missing_ok=True)
 
     def test_applescript_escaping(self):
         self.assertEqual(cc.applescript_str('a "b" \\ c\nd'), '"a \\"b\\" \\\\ c d"')

@@ -1,0 +1,50 @@
+# Required check for merging: CodeRabbit isn't requesting changes. Open review comments (critical or not) are blocked by the ruleset's "resolve all
+# conversations" rule instead: GitHub doesn't offer thread resolution as a workflow trigger, so a
+# check here couldn't re-run when you resolve one. It re-runs on pushes and on new reviews.
+# Whether CodeRabbit has reviewed the latest commit is the ruleset's job: it requires CodeRabbit's own
+# "CodeRabbit" check, which finishes on each commit once the review is done. A review can't tell us,
+# because CodeRabbit posts none when it finds nothing.
+name: AI review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  pull_request_review:
+    types: [submitted, dismissed]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: ai-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    name: AI review gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const number = context.payload.pull_request.number;
+            const reviews = (await github.paginate(github.rest.pulls.listReviews, { owner, repo, pull_number: number, per_page: 100 }))
+              .filter((r) => r.state !== "PENDING");
+            const by = (login) => reviews.filter((r) => r.user && r.user.login === login);
+            const problems = [];
+            // CodeRabbit posts no review when it finds nothing, so only its decision counts here;
+            // the required "CodeRabbit" check shows that it has reviewed.
+            const last = by("coderabbitai[bot]").filter((r) => r.state !== "COMMENTED").pop();
+            if (last && last.state === "CHANGES_REQUESTED") problems.push("CodeRabbit requests changes.");
+
+            const summary = core.summary.addHeading("AI review gate", 3);
+            if (problems.length) {
+              summary.addList(problems);
+              await summary.write();
+              core.setFailed(problems.join("\n"));
+            } else {
+              summary.addRaw("CodeRabbit isn't requesting changes.");
+              await summary.write();
+            }
