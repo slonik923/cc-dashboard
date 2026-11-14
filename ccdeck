@@ -39,7 +39,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
-VERSION = "0.8.0"
+VERSION = "0.8.1"
 HOME = Path.home()
 CLAUDE_DIR = Path(os.environ.get("CLAUDE_CONFIG_DIR", HOME / ".claude"))
 PROJECTS_DIR = CLAUDE_DIR / "projects"
@@ -1010,13 +1010,15 @@ def peer_sessions():
     return out
 
 
-def guess_live_sessions(sessions, hooks, procs, resumed, reg_pids=frozenset()):
+def guess_live_sessions(sessions, hooks, procs, resumed, reg_pids=frozenset(), registered=frozenset()):
     """Sessions no hook reports on: N claude processes in a folder => its N most recent sessions
-    are taken as open, less the processes hooks, the registry or `--resume <id>` already account for.
-    Each process counts once: after /resume, the old session's hook and the registry name the same pid."""
+    are taken as open, less the processes hooks or `--resume <id>` already account for.
+    Registered processes (reg_pids) are left out entirely: the registry says what they run (registered),
+    however many share a session. Each other process counts once: after /resume, the old session's hook
+    and the registry can name the same pid."""
     per_cwd = {}
     for pid, cwd, argv in procs:
-        if cwd:
+        if cwd and pid not in reg_pids:
             per_cwd[cwd] = per_cwd.get(cwd, 0) + 1
     by_cwd = {}
     for s in sessions.values():
@@ -1033,7 +1035,8 @@ def guess_live_sessions(sessions, hooks, procs, resumed, reg_pids=frozenset()):
             elif pid and pid not in reg_pids and pid not in counted and pid_alive(pid, h.get("pid_start")):
                 counted.add(pid)
                 n -= 1
-        rest = sorted((s for s in ss if not (hooks.get(s["id"]) or {}).get("pid") and s["id"] not in resumed),
+        rest = sorted((s for s in ss if not (hooks.get(s["id"]) or {}).get("pid") and s["id"] not in resumed
+                       and s["id"] not in registered),
                       key=lambda s: -s["last_ts"])
         live.update(s["id"] for s in rest[:max(0, n)])
     return live
@@ -1098,7 +1101,7 @@ def collect(include_all=False, days=DEFAULT_DAYS):
     owner = {pid: sid for sid, p in peers.items() for pid in p["pids"]}  # what each registered process runs now
     reg_pids = set(owner)
     resumed = resumed_ids([p for p in procs if p[0] not in reg_pids])
-    guessed_live = guess_live_sessions(sessions, hooks, procs, resumed | set(peers), reg_pids)
+    guessed_live = guess_live_sessions(sessions, hooks, procs, resumed, reg_pids, set(peers))
 
     resolve_linear(sessions)
     rows, cutoff = [], time.time() - days * 86400
