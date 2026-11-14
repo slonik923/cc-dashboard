@@ -854,6 +854,14 @@ class NotificationSettingTest(unittest.TestCase):
         with self.assertRaises(SystemExit):
             self.run_cmd("maybe")
 
+    def test_bad_config_values_count_as_defaults(self):
+        for bad in ({"notifications": None}, {"notifications": [1]}, [1, 2]):
+            cc.CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
+            cc.CONFIG_FILE.write_text(json.dumps(bad))
+            self.assertTrue(cc.notify_enabled("desktop"))
+            self.run_cmd("desktop", "off")  # repairs it
+            self.assertFalse(cc.notify_enabled("desktop"))
+
 
 class PsProcessTest(unittest.TestCase):
     """The macOS code path (no /proc): process facts from one cached `ps` snapshot."""

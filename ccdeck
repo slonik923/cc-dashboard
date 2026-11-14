@@ -1199,11 +1199,17 @@ def applescript_str(text):
 NOTIFY_CHANNELS = ("desktop",)  # one switch per channel in config.json; terminal, app and web go here later
 
 
+def notify_settings(cfg):
+    """config.json's notifications map; anything else there (null, a list, …) counts as empty."""
+    v = cfg.get("notifications") if isinstance(cfg, dict) else None
+    return v if isinstance(v, dict) else {}
+
+
 def notify_enabled(channel):
     """CCDECK_NOTIFY=0 turns every channel off; otherwise config.json's notifications.<channel> (default on)."""
     if os.environ.get("CCDECK_NOTIFY", "1") == "0":
         return False
-    return load_json(CONFIG_FILE, {}).get("notifications", {}).get(channel, True) is not False
+    return notify_settings(load_json(CONFIG_FILE, {})).get(channel, True) is not False
 
 
 def notify(title, body, urgent=False, sid=None):
@@ -2227,7 +2233,8 @@ def cmd_notifications(args):
         if any(c not in NOTIFY_CHANNELS for c in channels):
             sys.exit(f"Unknown channel; channels: {', '.join(NOTIFY_CHANNELS)}")
         cfg = load_json(CONFIG_FILE, {})
-        cfg.setdefault("notifications", {}).update({c: words[-1] == "on" for c in channels})
+        cfg = cfg if isinstance(cfg, dict) else {}
+        cfg["notifications"] = {**notify_settings(cfg), **{c: words[-1] == "on" for c in channels}}
         save_json(CONFIG_FILE, cfg)
     for c in NOTIFY_CHANNELS:
         print(f"{c} notifications: {'on' if notify_enabled(c) else 'off'}")

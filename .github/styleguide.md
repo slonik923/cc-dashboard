@@ -12,6 +12,7 @@ ccdeck is a local dashboard for Claude Code sessions: one Python script (`ccdeck
    - The only exception is the opt-in `PermissionRequest` approval path. It must fail closed: on any error, no output, and the terminal decides.
 2. **Standard library only, Python 3.9+.**
    - No third-party imports, no syntax newer than 3.9 (e.g. no `match`, no `X | Y` type unions at runtime).
+   - One exception: PyGObject (`gi`), imported only inside `notification_click`, only after `notify()` has checked it's installed. It makes Linux notifications clickable (GNOME sends the click only to the D-Bus connection that sent the notification, which the standard library can't hold). Without it, notifications still work, they just can't be clicked. Nothing else may depend on it.
    - The page loads nothing from other origins.
 3. **The local server is an attack surface.**
    - It binds `127.0.0.1` and requires the token on API calls.
