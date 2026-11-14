@@ -897,6 +897,11 @@ class MacDesktopTest(unittest.TestCase):
         finally:
             cc.shutil.which = saved
         self.assertEqual([l for l, _ in out], ["tmux"])  # a pane's GNOME_TERMINAL_SCREEN is the tmux server's
+        cc.shutil.which = lambda b: None if b == "tmux" else "/usr/bin/" + b
+        try:  # no tmux to reach the pane: don't fall back to the tab the tmux server started in
+            self.assertEqual(cc.focus_commands(dict(gnome, TMUX_PANE="%7"), None), [])
+        finally:
+            cc.shutil.which = saved
         self.assertEqual(out[0][1][1], ["tmux", "-S", "/tmp/tmux-1000/default", "select-window", "-t", "%7"])
 
     def test_tmux_pane_from_tty_without_proc_and_detached_sessions(self):
