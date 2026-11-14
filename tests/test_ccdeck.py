@@ -424,6 +424,19 @@ class HookTest(unittest.TestCase):
         finally:
             shutil.rmtree(reg)
 
+    def test_two_processes_on_one_registered_session_leave_no_slot(self):
+        # both processes in the folder run registered session B; closed, hookless sessions there stay closed
+        build_fixtures()
+        me, parent = os.getpid(), os.getppid()
+        saved = cc.peer_sessions, cc.running_claude_processes
+        cc.peer_sessions = lambda: {"s-closed": {"name": "b", "pid": me, "pids": [me, parent]}}
+        cc.running_claude_processes = lambda: [(me, str(WORK), ["claude"]), (parent, str(WORK), ["claude"])]
+        try:
+            rows = by_id(cc.collect(True, 10 ** 6))
+            self.assertEqual({k for k, r in rows.items() if r["alive"]}, {"s-closed"})
+        finally:
+            cc.peer_sessions, cc.running_claude_processes = saved
+
     def test_two_processes_on_one_session_both_count(self):
         reg = cc.CLAUDE_DIR / "sessions"
         reg.mkdir(parents=True, exist_ok=True)
@@ -836,7 +849,7 @@ class GuessLiveTest(unittest.TestCase):
         sessions = {k: {"id": k, "cwd": "/w/app", "last_ts": ts} for k, ts in [("A", 1), ("B", 2), ("C", 3)]}
         hooks = {"A": {"pid": me, "pid_start": start}}
         procs = [(me, "/w/app", ["claude"]), (2, "/w/app", ["claude"])]
-        self.assertEqual(cc.guess_live_sessions(sessions, hooks, procs, {"B"}, {me}), {"C"})
+        self.assertEqual(cc.guess_live_sessions(sessions, hooks, procs, set(), {me}, {"B"}), {"C"})
 
     def test_registry_sessions_use_up_their_process(self):
         # registry session A is open in /w/app; B is newer and closed: one process, so only A
