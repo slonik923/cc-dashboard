@@ -409,6 +409,36 @@ class HookTest(unittest.TestCase):
         finally:
             shutil.rmtree(reg)
 
+    def test_malformed_registry_records_are_skipped(self):
+        reg = cc.CLAUDE_DIR / "sessions"
+        reg.mkdir(parents=True, exist_ok=True)
+        me, start = os.getpid(), cc.proc_start_time(os.getpid())
+        for i, rec in enumerate(({"pid": me, "procStart": start, "sessionId": ["A"]},
+                                 {"pid": me, "procStart": start, "sessionId": ""},
+                                 {"pid": str(me), "procStart": start, "sessionId": "B"},
+                                 [1, 2])):
+            (reg / f"{i}.json").write_text(json.dumps(rec))
+        (reg / "ok.json").write_text(json.dumps({"pid": me, "procStart": start, "sessionId": "C", "name": {"x": 1}}))
+        try:
+            self.assertEqual(cc.peer_sessions(), {"C": {"name": None, "pid": me}})
+        finally:
+            shutil.rmtree(reg)
+
+    def test_a_process_that_switched_sessions_counts_once(self):
+        # pid 1 started with --resume A, then switched to B (/resume); pid 2 runs hookless C in the same folder
+        build_fixtures()
+        saved = cc.peer_sessions, cc.running_claude_processes
+        cc.peer_sessions = lambda: {"s-closed": {"name": "b", "pid": 1}}
+        cc.running_claude_processes = lambda: [(1, str(WORK), ["claude", "--resume", "s-midtask"]), (2, str(WORK), ["claude"])]
+        try:
+            rows = by_id(cc.collect(True, 10 ** 6))
+            self.assertTrue(rows["s-closed"]["alive"])     # B: the registry says pid 1 runs it
+            self.assertFalse(rows["s-midtask"]["alive"])   # A: pid 1's stale --resume argument
+            live = [k for k, r in rows.items() if r["alive"]]
+            self.assertEqual(len(live), 2, live)           # pid 2's session is still guessed open
+        finally:
+            cc.peer_sessions, cc.running_claude_processes = saved
+
     def test_resumed_elsewhere_drops_the_ended_processs_permission(self):
         build_fixtures()
         sid = "s-closed"

@@ -996,9 +996,13 @@ def peer_sessions():
     out = {}
     for f in (CLAUDE_DIR / "sessions").glob("*.json"):
         d = load_json(f, {})
+        if not isinstance(d, dict):
+            continue
+        sid, pid, start, name = d.get("sessionId"), d.get("pid"), d.get("procStart"), d.get("name")
+        # the format is Claude Code's and undocumented: skip records that don't look as expected.
         # procStart is required: without it pid_alive accepts any process that reused the pid
-        if isinstance(d, dict) and d.get("sessionId") and d.get("procStart") and pid_alive(d.get("pid"), d["procStart"]):
-            out[d["sessionId"]] = {"name": d.get("name"), "pid": d["pid"]}
+        if isinstance(sid, str) and sid and isinstance(pid, int) and start and pid_alive(pid, start):
+            out[sid] = {"name": name if isinstance(name, str) else None, "pid": pid}
     return out
 
 
@@ -1080,7 +1084,10 @@ def collect(include_all=False, days=DEFAULT_DAYS):
     prc = pr_cache()
     peers = peer_sessions()
 
-    resumed = resumed_ids(procs)
+    # one session per process: the registry knows what a process runs now, its --resume argument
+    # only what it started on (/resume switches sessions in place)
+    reg_pids = {p["pid"] for p in peers.values()}
+    resumed = resumed_ids([p for p in procs if p[0] not in reg_pids])
     guessed_live = guess_live_sessions(sessions, hooks, procs, resumed | set(peers))
 
     resolve_linear(sessions)
