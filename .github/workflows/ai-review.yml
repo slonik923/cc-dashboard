@@ -1,8 +1,11 @@
-# Required check for merging: CodeRabbit has reviewed the latest commit and isn't requesting changes,
-# and Gemini Code Assist has reviewed the PR (it reviews when a PR opens, not on every push; comment
+# Required check for merging: CodeRabbit isn't requesting changes, and Gemini Code Assist has reviewed
+# the PR (it reviews when a PR opens, not on every push; comment
 # `/gemini review` to ask again). Open review comments (critical or not) are blocked by the ruleset's "resolve all
 # conversations" rule instead: GitHub doesn't offer thread resolution as a workflow trigger, so a
 # check here couldn't re-run when you resolve one. It re-runs on pushes and on new reviews.
+# Whether CodeRabbit has reviewed the latest commit is the ruleset's job: it requires CodeRabbit's own
+# "CodeRabbit" check, which finishes on each commit once the review is done. A review can't tell us,
+# because CodeRabbit posts none when it finds nothing.
 name: AI review
 
 on:
@@ -27,40 +30,19 @@ jobs:
       - uses: actions/github-script@v7
         with:
           script: |
-            const REVIEWERS = { "gemini-code-assist[bot]": "Gemini Code Assist", "coderabbitai[bot]": "CodeRabbit" };
             const { owner, repo } = context.repo;
             const number = context.payload.pull_request.number;
-            const head = context.payload.pull_request.head.sha;
-
-            const reviews = await github.paginate(github.rest.pulls.listReviews, { owner, repo, pull_number: number, per_page: 100 });
+            const reviews = (await github.paginate(github.rest.pulls.listReviews, { owner, repo, pull_number: number, per_page: 100 }))
+              .filter((r) => r.state !== "PENDING");
+            const by = (login) => reviews.filter((r) => r.user && r.user.login === login);
             const problems = [];
-            for (const [login, name] of Object.entries(REVIEWERS)) {
-              const mine = reviews.filter((r) => r.user && r.user.login === login && r.state !== "PENDING");
-              if (!mine.length) {
-                problems.push(`${name} hasn't reviewed this PR yet. If it was opened before the app was installed, comment ` +
-                  (login.startsWith("gemini") ? "`/gemini review`." : "`@coderabbitai review`."));
-                continue;
-              }
-              const last = mine.filter((r) => r.state !== "COMMENTED").pop();
-              if (last && last.state === "CHANGES_REQUESTED") problems.push(`${name} requests changes.`);
-              // CodeRabbit re-reviews every push, so its latest review must cover the head commit.
-              // Updates from the base branch don't count as new code: only commits that are new
-              // since that review AND unique to this PR (not on the base branch) do, merges excluded.
-              if (login === "coderabbitai[bot]" && !mine.some((r) => r.commit_id === head)) {
-                const reviewed = mine[mine.length - 1].commit_id;
-                const base = context.payload.pull_request.base.ref;
-                const compare = (basehead) => github.paginate(github.rest.repos.compareCommitsWithBasehead,
-                  { owner, repo, basehead, per_page: 100 }, (res) => res.data.commits);
-                const { data: since } = await github.rest.repos.compareCommitsWithBasehead({ owner, repo, basehead: `${reviewed}...${head}`, per_page: 1 });
-                const sinceCommits = await compare(`${reviewed}...${head}`);  // all pages
-                const prOnly = new Set((await compare(`${base}...${head}`)).map((c) => c.sha));
-                const fresh = sinceCommits.filter((c) => prOnly.has(c.sha) && (c.parents || []).length < 2);
-                if (since.status === "diverged" || fresh.length) {
-                  problems.push(`CodeRabbit hasn't reviewed the latest commit${fresh.length > 1 ? "s" : ""} yet. It usually does within a few minutes; ` +
-                    "to ask now, comment `@coderabbitai review`.");
-                }
-              }
+            // Gemini always posts a review. CodeRabbit posts none when it finds nothing, so only its decision counts here;
+            // the required "CodeRabbit" check shows that it has reviewed.
+            if (!by("gemini-code-assist[bot]").length) {
+              problems.push("Gemini Code Assist hasn't reviewed this PR yet. If it was opened before the app was installed, comment `/gemini review`.");
             }
+            const last = by("coderabbitai[bot]").filter((r) => r.state !== "COMMENTED").pop();
+            if (last && last.state === "CHANGES_REQUESTED") problems.push("CodeRabbit requests changes.");
 
             const summary = core.summary.addHeading("AI review gate", 3);
             if (problems.length) {
@@ -68,6 +50,6 @@ jobs:
               await summary.write();
               core.setFailed(problems.join("\n"));
             } else {
-              summary.addRaw("Both reviewers have reviewed this PR, and CodeRabbit isn't requesting changes.");
+              summary.addRaw("Gemini has reviewed this PR, and CodeRabbit isn't requesting changes.");
               await summary.write();
             }

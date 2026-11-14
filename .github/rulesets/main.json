@@ -29,7 +29,8 @@
           { "context": "Tests (ubuntu-24.04, Python 3.13)" },
           { "context": "Tests (macos-latest, Python 3.12)" },
           { "context": "Plugin manifest" },
-          { "context": "AI review gate" }
+          { "context": "AI review gate" },
+          { "context": "CodeRabbit" }
         ]
       }
     }

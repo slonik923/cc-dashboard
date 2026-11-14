@@ -190,7 +190,8 @@ The tests run against a throwaway `HOME` with synthetic transcripts and a fake `
 **Merging into `main`** needs all of these:
 - the CI jobs pass;
 - every review conversation is resolved, so an open comment (critical or not) blocks the merge;
-- the **AI review gate** check passes (`.github/workflows/ai-review.yml`): CodeRabbit has reviewed the latest commit and isn't requesting changes, and Gemini has reviewed the PR. Gemini reviews when a PR opens; comment `/gemini review` to ask again after bigger changes.
+- the **AI review gate** check passes (`.github/workflows/ai-review.yml`): CodeRabbit isn't requesting changes, and Gemini has reviewed the PR;
+- the **CodeRabbit** check passes, which means CodeRabbit has reviewed the latest commit. Gemini reviews when a PR opens; comment `/gemini review` to ask again after bigger changes.
 
 The rules are in `.github/rulesets/main.json`. GitHub applies them only after they're imported once, under Settings → Rules → Rulesets → New ruleset → Import a ruleset.
 
