@@ -795,6 +795,15 @@ class GuessLiveTest(unittest.TestCase):
         hooks = {"new": {"pid": os.getpid(), "pid_start": cc.proc_start_time(os.getpid())}}
         self.assertEqual(cc.guess_live_sessions(sessions, hooks, procs, {"resumed"}), {"mid"})
 
+    def test_a_switched_process_takes_one_slot(self):
+        # pid P ran A (its hook still names P), then /resume switched it to B (the registry names P);
+        # hookless C runs in a second process in the same folder
+        me, start = os.getpid(), cc.proc_start_time(os.getpid())
+        sessions = {k: {"id": k, "cwd": "/w/app", "last_ts": ts} for k, ts in [("A", 1), ("B", 2), ("C", 3)]}
+        hooks = {"A": {"pid": me, "pid_start": start}}
+        procs = [(me, "/w/app", ["claude"]), (2, "/w/app", ["claude"])]
+        self.assertEqual(cc.guess_live_sessions(sessions, hooks, procs, {"B"}, {me}), {"C"})
+
     def test_registry_sessions_use_up_their_process(self):
         # registry session A is open in /w/app; B is newer and closed: one process, so only A
         sessions = {"A": {"id": "A", "cwd": "/w/app", "last_ts": 1}, "B": {"id": "B", "cwd": "/w/app", "last_ts": 2}}

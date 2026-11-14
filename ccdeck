@@ -1006,9 +1006,10 @@ def peer_sessions():
     return out
 
 
-def guess_live_sessions(sessions, hooks, procs, resumed):
+def guess_live_sessions(sessions, hooks, procs, resumed, reg_pids=frozenset()):
     """Sessions no hook reports on: N claude processes in a folder => its N most recent sessions
-    are taken as open, less the processes hooks or `--resume <id>` already account for."""
+    are taken as open, less the processes hooks, the registry or `--resume <id>` already account for.
+    Each process counts once: after /resume, the old session's hook and the registry name the same pid."""
     per_cwd = {}
     for pid, cwd, argv in procs:
         if cwd:
@@ -1019,10 +1020,14 @@ def guess_live_sessions(sessions, hooks, procs, resumed):
             by_cwd.setdefault(s["cwd"], []).append(s)
     live = set()
     for cwd, ss in by_cwd.items():
-        n = per_cwd[cwd]
+        n, counted = per_cwd[cwd], set()
         for s in ss:  # processes already explained
-            h = hooks.get(s["id"])
-            if (h and h.get("pid") and pid_alive(h["pid"], h.get("pid_start"))) or s["id"] in resumed:
+            h = hooks.get(s["id"]) or {}
+            pid = h.get("pid")
+            if s["id"] in resumed:
+                n -= 1
+            elif pid and pid not in reg_pids and pid not in counted and pid_alive(pid, h.get("pid_start")):
+                counted.add(pid)
                 n -= 1
         rest = sorted((s for s in ss if not (hooks.get(s["id"]) or {}).get("pid") and s["id"] not in resumed),
                       key=lambda s: -s["last_ts"])
@@ -1088,7 +1093,7 @@ def collect(include_all=False, days=DEFAULT_DAYS):
     # only what it started on (/resume switches sessions in place)
     reg_pids = {p["pid"] for p in peers.values()}
     resumed = resumed_ids([p for p in procs if p[0] not in reg_pids])
-    guessed_live = guess_live_sessions(sessions, hooks, procs, resumed | set(peers))
+    guessed_live = guess_live_sessions(sessions, hooks, procs, resumed | set(peers), reg_pids)
 
     resolve_linear(sessions)
     rows, cutoff = [], time.time() - days * 86400
