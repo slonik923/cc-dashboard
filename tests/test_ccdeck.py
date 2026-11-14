@@ -873,8 +873,18 @@ class ServerTest(unittest.TestCase):
 
 
 class InboxClickTest(unittest.TestCase):
+    def test_concurrent_notifications_for_one_session_leave_one_entry(self):
+        shutil.rmtree(cc.INBOX_DIR, ignore_errors=True)
+        threads = [threading.Thread(target=cc.inbox_add, args=("s7", "idle", f"n{i}", "")) for i in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertEqual(len([d for d in cc.inbox_items() if d["sid"] == "s7"]), 1)
+        shutil.rmtree(cc.INBOX_DIR, ignore_errors=True)
+
     def test_the_inbox_keeps_the_whole_message(self):
-        long = "Should I roll back the canary?\n\n" + "Details. " * 200
+        long = "Should I roll back the canary?\n\n" + "Details. " * 2000  # well past the dashboard's message limit
         cc.notify("Question · deploy", cc.one_line(long, 160), sid="s9", state="question", text=long)
         (entry,) = [d for d in cc.inbox_items() if d["sid"] == "s9"]
         self.assertEqual(entry["body"], long)  # CCDECK_NOTIFY=0 here: no popup, the entry is still kept

@@ -705,16 +705,18 @@ function render() {
   renderDrawer(all);
   renderInbox();
   if (keep) focusKey(keep);
+  if (keep && keep.startsWith("ib") && !$("inboxHost").contains(document.activeElement)) $("inboxBtn").focus(); // its entry is gone
 }
 // Notifications you haven't acted on, one per session. ccdeck drops one when its session moves on (you replied,
 // answered the prompt, or it closed), when you click it on the desktop, or when you dismiss it here.
 let inboxBy = {};
 const inboxItem = (n) => h("li", { "data-nid": n.id },
   ic("bell", "i-sm"),
-  h("button", { class: "ib-open", title: "Open this session", onclick: (e) => { e.stopPropagation(); ui.inbox = false; renderInbox(); openDrawer(n.sid); } },
+  h("button", { class: "ib-open", title: "Open this session", "data-key": "ib-open:" + n.id, onclick: (e) => { e.stopPropagation(); ui.inbox = false; renderInbox(); openDrawer(n.sid); } },
       h("span", { class: "rr-title" }, n.title || ""), h("span", { class: "ib-body" }, n.body || "")),
   h("span", { class: "ago" }, agoShort(n.ts)),
-  h("button", { class: "ibtn ibtn-sm", "aria-label": "Dismiss notification", title: "Dismiss", onclick: (e) => { e.stopPropagation(); act("", "dismiss", { nid: n.id }); } }, ic("close", "i-sm")));
+  h("button", { class: "ibtn ibtn-sm", "aria-label": "Dismiss notification", title: "Dismiss", "data-key": "ib-x:" + n.id, onclick: (e) => { e.stopPropagation(); act("", "dismiss", { nid: n.id }); } }, ic("close", "i-sm")));
+let inboxSig = "";
 function renderInbox() {
   const items = (data && data.notifications) || [];
   const badge = $("inboxBadge");
@@ -722,9 +724,13 @@ function renderInbox() {
   badge.textContent = items.length > 99 ? "99+" : String(items.length);
   $("inboxBtn").setAttribute("aria-label", items.length ? "Notifications: " + items.length + " not acted on" : "Notifications: none");
   $("inboxBtn").setAttribute("aria-expanded", ui.inbox ? "true" : "false");
+  // rebuild only when something changed, so a refresh doesn't take keyboard focus out of the menu
+  const sig = ui.inbox + "|" + items.map((n) => n.id + ":" + agoShort(n.ts)).join(",");
+  if (sig === inboxSig) return;
+  inboxSig = sig;
   $("inboxHost").replaceChildren(ui.inbox ? h("div", { class: "inboxpop", role: "dialog", "aria-label": "Notifications", onclick: (e) => e.stopPropagation() },
     h("div", { class: "inboxpop-head" }, h("h4", {}, "Notifications"), h("span", { class: "ghint" }, "Gone once you act on them"), h("span", { class: "grow" }),
-      items.length ? h("button", { class: "linkbtn", onclick: () => act("", "dismiss_all") }, "Clear all") : null),
+      items.length ? h("button", { class: "linkbtn", "data-key": "ib-clear", onclick: () => act("", "dismiss_all") }, "Clear all") : null),
     items.length ? h("ul", { class: "rrlist inbox" }, items.map((n) => inboxItem(n)))
       : h("p", { class: "inbox-empty" }, "Nothing is waiting on you.")) : "");
 }

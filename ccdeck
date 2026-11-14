@@ -22,6 +22,7 @@ ID is a row number from the last list or any unique prefix of a session id.
 """
 
 import argparse
+import fcntl
 import importlib.util
 import hashlib
 import json
@@ -1219,11 +1220,14 @@ def notify_enabled(channel):
 def inbox_add(sid, state, title, body):
     """Keep a notification until it's acted on. One file each, so the dashboard, hooks and click helpers
     never overwrite each other's changes."""
-    for d in inbox_items():
-        if d["sid"] == sid:
-            inbox_clear(d["id"])  # one per session: the newest says what it needs now
-    nid = f"{int(time.time() * 1000)}-{secrets.token_hex(3)}"
-    save_json(INBOX_DIR / f"{nid}.json", {"id": nid, "sid": sid, "state": state, "title": title, "body": body, "ts": time.time()})
+    INBOX_DIR.mkdir(parents=True, exist_ok=True)
+    with open(INBOX_DIR / ".lock", "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)  # two hooks for one session at once must still leave one entry
+        for d in inbox_items():
+            if d["sid"] == sid:
+                inbox_clear(d["id"])  # one per session: the newest says what it needs now
+        nid = f"{int(time.time() * 1000)}-{secrets.token_hex(3)}"
+        save_json(INBOX_DIR / f"{nid}.json", {"id": nid, "sid": sid, "state": state, "title": title, "body": body, "ts": time.time()})
     return nid
 
 
@@ -1252,7 +1256,7 @@ def inbox_sweep(rows):
 
 def notify(title, body, urgent=False, sid=None, state=None, text=None):
     """body: the short line for the desktop popup; text: the whole message, kept in the inbox."""
-    nid = inbox_add(sid, state, title, (text or body)[-MSG_LIMIT:]) if sid else None
+    nid = inbox_add(sid, state, title, text or body) if sid else None
     if not notify_enabled("desktop"):
         return
     if IS_MAC:
