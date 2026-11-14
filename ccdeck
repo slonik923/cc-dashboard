@@ -1117,6 +1117,7 @@ def collect(include_all=False, days=DEFAULT_DAYS):
             hook = None  # another process resumed it; the ended one's status (ended, permission) isn't the live one's
         s["alive"] = alive
         s["peer_name"] = (peers.get(sid) or {}).get("name")
+        s["peer_open"] = sid in peers  # open in a terminal Claude Code knows; it may have no name
         s["mark"] = marks.get(sid) or {}
         s["pr_details"] = pr_details(s, prc)
         st = classify(s, hook, alive)
@@ -1294,7 +1295,9 @@ def focus_commands(env, tty):
         sock = (env.get("TMUX") or "").split(",")[0]
         tmux = ["tmux"] + (["-S", sock] if sock else [])
         # shortcut: picks the window and pane, but doesn't raise the terminal the tmux client runs in
-        out.append(("tmux", [tmux + ["select-window", "-t", pane], tmux + ["select-pane", "-t", pane]]))
+        # first command: how many clients show the pane's session; 0 (detached) means nobody would see it
+        out.append(("tmux", [tmux + ["display-message", "-p", "-t", pane, "#{session_attached}"],
+                             tmux + ["select-window", "-t", pane], tmux + ["select-pane", "-t", pane]]))
         return out  # inside tmux, GNOME_TERMINAL_SCREEN is the tmux server's, not this pane's
     m = re.fullmatch(r"/org/gnome/Terminal/screen/([0-9a-f_]{36})", env.get("GNOME_TERMINAL_SCREEN") or "")
     if m and shutil.which("gdbus"):
@@ -1322,14 +1325,32 @@ def focus_commands(env, tty):
     return out
 
 
+def tmux_pane_of_tty(tty):
+    """The tmux pane (%N) whose terminal is tty, on the default tmux server; None if there's none."""
+    # shortcut: default socket only; without /proc we can't read the process's TMUX to find another server
+    if not tty or not shutil.which("tmux"):
+        return None
+    try:
+        out = subprocess.run(["tmux", "list-panes", "-a", "-F", "#{pane_tty} #{pane_id}"],
+                             capture_output=True, text=True, timeout=5).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return next((pane for t, _, pane in (line.partition(" ") for line in out.splitlines()) if t == tty), None)
+
+
 def focus_terminal(pid):
     """Switch to the terminal tab running pid. Returns the terminal's name, or None if we can't."""
     env = proc_environ(pid) if USE_PROC else {}
-    for label, cmds in focus_commands(env, proc_tty(pid) if IS_MAC else None):
+    tty = proc_tty(pid) if (IS_MAC or not USE_PROC) else None
+    if not USE_PROC and (pane := tmux_pane_of_tty(tty)):
+        env = {"TMUX_PANE": pane}  # no /proc to read TMUX_PANE from: the pane that owns the tty
+    for label, cmds in focus_commands(env, tty if IS_MAC else None):
         try:
             rs = [subprocess.run(c, capture_output=True, text=True, timeout=10, env=desktop_env()) for c in cmds]
         except (OSError, subprocess.SubprocessError):
             continue
+        if label == "tmux" and rs[0].stdout.strip() in ("", "0"):
+            continue  # detached session: switching succeeds but shows nothing
         if all(r.returncode == 0 for r in rs) and (cmds[0][0] != "osascript" or rs[0].stdout.strip() == "ok"):
             return label
     return None
@@ -1350,7 +1371,7 @@ MSG_LIMIT = 8000  # characters of the last message sent to the page
 def session_json(s):
     keep = ("id", "display_title", "title", "cwd", "branch", "first_ts", "last_ts", "prompts",
             "last_role", "pending_tool", "pending_input", "links", "files", "alive", "live_source",
-            "mark", "pr_details", "state", "group", "label", "hook_message", "peer_name")
+            "mark", "pr_details", "state", "group", "label", "hook_message", "peer_name", "peer_open")
     d = {k: s.get(k) for k in keep}
     d["last_text"] = (s.get("last_text") or "")[-MSG_LIMIT:]
     d["last_text_cut"] = len(s.get("last_text") or "") > MSG_LIMIT

@@ -884,7 +884,29 @@ class MacDesktopTest(unittest.TestCase):
         finally:
             cc.shutil.which = saved
         self.assertEqual([l for l, _ in out], ["tmux"])  # a pane's GNOME_TERMINAL_SCREEN is the tmux server's
-        self.assertEqual(out[0][1][0], ["tmux", "-S", "/tmp/tmux-1000/default", "select-window", "-t", "%7"])
+        self.assertEqual(out[0][1][1], ["tmux", "-S", "/tmp/tmux-1000/default", "select-window", "-t", "%7"])
+
+    def test_tmux_pane_from_tty_without_proc_and_detached_sessions(self):
+        fake = FAKE_GH.parent / "tmux"
+        log = TMP / "tmux.log"
+        saved = cc.USE_PROC, cc.IS_MAC, cc.proc_tty
+        cc.USE_PROC, cc.IS_MAC, cc.proc_tty = False, False, lambda pid: "/dev/ttys004"
+        try:
+            for attached, expected in (("1", "tmux"), ("0", None)):
+                fake.write_text(f"""#!/bin/sh
+echo "$@" >> {log}
+case "$1" in
+  list-panes) printf '/dev/ttys003 %%5\n/dev/ttys004 %%6\n' ;;
+  display-message) echo {attached} ;;
+esac
+""")
+                fake.chmod(0o755)
+                log.unlink(missing_ok=True)
+                self.assertEqual(cc.focus_terminal(123), expected)
+                self.assertIn("display-message -p -t %6", log.read_text())  # the pane that owns the tty
+        finally:
+            cc.USE_PROC, cc.IS_MAC, cc.proc_tty = saved
+            fake.unlink(missing_ok=True)
 
     def test_applescript_escaping(self):
         self.assertEqual(cc.applescript_str('a "b" \\ c\nd'), '"a \\"b\\" \\\\ c d"')

@@ -361,7 +361,7 @@ function deco(s) {
   const m = s.mark || {};
   return {
     raw: s, id: s.id, k, g: st.g, stateLabel: st.l, icon: st.i, title: s.display_title || "(untitled)",
-    project: s.project || "?", cwd: s.cwd || "", branch: s.branch || "no branch", sid: s.id.slice(0, 8), name: s.peer_name || "",
+    project: s.project || "?", cwd: s.cwd || "", branch: s.branch || "no branch", sid: s.id.slice(0, 8), name: s.peer_name || "", peerOpen: !!s.peer_open,
     prompts: s.prompts || 0, ts: s.last_ts || 0, ago: agoShort(s.last_ts), run: !!s.alive,
     reason, code, msg, prs, links, issues, main, related, relatedN, long, cut: !!s.last_text_cut, files: (s.files || []).length, fileList: s.files || [],
     note: m.note || "", parked: !!m.parked, marked: !!m.done,
@@ -451,8 +451,8 @@ function menuBtn(s, up, label) {
       onclick: (e) => { e.stopPropagation(); ui.menu = open ? "" : s.id; render(); if (!open) focusKey("mi:" + s.id + ":0"); } }, ic("more", "i-sm")),
     open ? menu(s, up) : null);
 }
-const resumeHint = (s) => s.name ? "Go to tab switches to its terminal." : "Resume opens the session in a new terminal window.";
-const resumeBtn = (s, cls, label, size) => h("button", { class: cls, "data-key": "r:" + s.id + ":" + (label || ""), onclick: () => act(s.id, "resume") }, ic("terminal", size), s.name ? "Go to tab" : label || "Resume");
+const resumeHint = (s) => s.peerOpen ? "Go to tab switches to its terminal." : "Resume opens the session in a new terminal window.";
+const resumeBtn = (s, cls, label, size) => h("button", { class: cls, "data-key": "r:" + s.id + ":" + (label || ""), onclick: () => act(s.id, "resume") }, ic("terminal", size), s.peerOpen ? "Go to tab" : label || "Resume");
 const copyBtn = (s, big) => big
   ? h("button", { class: "btn" + (big === "lg" ? " btn-lg" : ""), onclick: () => copy(s.resumeCmd, "Resume command") }, ic("copy", big === "lg" ? null : "i-sm"), "Copy command")
   : h("button", { class: "ibtn ibtn-sm", "aria-label": "Copy resume command", title: "Copy resume command", onclick: () => copy(s.resumeCmd, "Resume command") }, ic("copy", "i-sm"));
