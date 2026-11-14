@@ -795,7 +795,7 @@ class ServerTest(unittest.TestCase):
     def test_notification_click_goes_to_the_sessions_tab(self):
         saved = cc.peer_sessions, cc.focus_terminal, cc.notification_click, sys.argv
         focused = []
-        cc.peer_sessions = lambda: {"s-closed": {"name": "work-2d", "pid": 42}}
+        cc.peer_sessions = lambda: {"s-closed": {"name": "work-2d", "pid": 42, "pids": [42]}}
         cc.focus_terminal = lambda pid, token: focused.append((pid, token))
         def boom(*a):
             raise RuntimeError("no session bus")
