@@ -1307,14 +1307,19 @@ def proc_tty(pid):
 
 
 def gnome_terminal_window():
-    """D-Bus path of any open gnome-terminal window, or None."""
+    """(D-Bus path, active tab index) of any open gnome-terminal window, or None."""
+    def gdbus(*args):
+        return subprocess.run(["gdbus", *args], capture_output=True, text=True, timeout=5, env=desktop_env()).stdout
     try:
-        out = subprocess.run(["gdbus", "introspect", "--session", "-d", "org.gnome.Terminal", "-o", "/org/gnome/Terminal/window"],
-                             capture_output=True, text=True, timeout=5, env=desktop_env()).stdout
+        m = re.search(r"node (\d+)", gdbus("introspect", "--session", "-d", "org.gnome.Terminal", "-o", "/org/gnome/Terminal/window"))
+        if not m:
+            return None
+        path = f"/org/gnome/Terminal/window/{m.group(1)}"
+        tab = re.search(r"<(-?\d+)>", gdbus("call", "--session", "-d", "org.gnome.Terminal", "-o", path,
+                                            "-m", "org.gtk.Actions.Describe", "active-tab"))
     except (OSError, subprocess.SubprocessError):
         return None
-    m = re.search(r"node (\d+)", out)
-    return f"/org/gnome/Terminal/window/{m.group(1)}" if m else None
+    return (path, int(tab.group(1))) if tab else None
 
 
 def focus_commands(env, tty, token=None):
@@ -1338,10 +1343,12 @@ def focus_commands(env, tty, token=None):
         cmds = []
         win = token and re.fullmatch(r"[\w/.:+=-]+", token) and gnome_terminal_window()
         if win:
-            # without the token GNOME says "Terminal is ready" instead of raising the window; a harmless
-            # window action carrying it hands it to gnome-terminal for the present that follows
-            cmds.append(["gdbus", "call", "--session", "-d", "org.gnome.Terminal", "-o", win, "-m", "org.gtk.Actions.Activate",
-                         "--", "find-clear", "[]", f"{{'desktop-startup-id': <'{token}'>, 'activation-token': <'{token}'>}}"])
+            # without the token GNOME says "Terminal is ready" instead of raising the window. A window action
+            # carrying it hands it to gnome-terminal for the present that follows; setting active-tab to the tab
+            # already active changes nothing (find-clear, used before, cleared that tab's search)
+            path, tab = win
+            cmds.append(["gdbus", "call", "--session", "-d", "org.gnome.Terminal", "-o", path, "-m", "org.gtk.Actions.SetState",
+                         "--", "active-tab", f"<{tab}>", f"{{'desktop-startup-id': <'{token}'>, 'activation-token': <'{token}'>}}"])
         out.append(("gnome-terminal", cmds + [["gdbus", "call", "--session", "-d", "org.gnome.Terminal",
                                         "-o", "/org/gnome/Terminal/SearchProvider",
                                         "-m", "org.gnome.Shell.SearchProvider2.ActivateResult",
