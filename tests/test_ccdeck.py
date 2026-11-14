@@ -420,15 +420,49 @@ class HookTest(unittest.TestCase):
             (reg / f"{i}.json").write_text(json.dumps(rec))
         (reg / "ok.json").write_text(json.dumps({"pid": me, "procStart": start, "sessionId": "C", "name": {"x": 1}}))
         try:
-            self.assertEqual(cc.peer_sessions(), {"C": {"name": None, "pid": me}})
+            self.assertEqual(cc.peer_sessions(), {"C": {"name": None, "pid": me, "pids": [me]}})
         finally:
             shutil.rmtree(reg)
+
+    def test_two_processes_on_one_session_both_count(self):
+        reg = cc.CLAUDE_DIR / "sessions"
+        reg.mkdir(parents=True, exist_ok=True)
+        me, parent = os.getpid(), os.getppid()
+        for pid in (me, parent):
+            (reg / f"{pid}.json").write_text(json.dumps({"pid": pid, "procStart": cc.proc_start_time(pid), "sessionId": "B"}))
+        try:
+            self.assertEqual(sorted(cc.peer_sessions()["B"]["pids"]), sorted([me, parent]))
+        finally:
+            shutil.rmtree(reg)
+
+    def test_a_hook_whose_process_now_runs_another_session_is_stale(self):
+        # this process wrote A's hook (asking for permission), then /resume switched it to B
+        build_fixtures()
+        a, b, me = "s-midtask", "s-closed", os.getpid()
+        self.run_hook({"session_id": a, "hook_event_name": "UserPromptSubmit", "cwd": str(WORK)})
+        self.run_hook({"session_id": a, "hook_event_name": "Notification",
+                       "notification_type": "permission_prompt", "message": "Claude needs your permission to use Bash"})
+        state_file = cc.STATE_DIR / f"{a}.json"
+        st = json.loads(state_file.read_text())
+        st["pid"], st["pid_start"] = me, cc.proc_start_time(me)
+        state_file.write_text(json.dumps(st))
+        saved = cc.peer_sessions, cc.running_claude_processes
+        cc.peer_sessions = lambda: {b: {"name": "b", "pid": me, "pids": [me]}}
+        cc.running_claude_processes = lambda: [(me, str(WORK), ["claude"])]
+        try:
+            rows = by_id(cc.collect(True, 10 ** 6))
+            self.assertTrue(rows[b]["alive"])
+            self.assertFalse(rows[a]["alive"])
+            self.assertNotEqual(rows[a]["state"], "permission")
+        finally:
+            cc.peer_sessions, cc.running_claude_processes = saved
+            state_file.unlink(missing_ok=True)  # it names this live process: don't leak it into other tests
 
     def test_a_process_that_switched_sessions_counts_once(self):
         # pid 1 started with --resume A, then switched to B (/resume); pid 2 runs hookless C in the same folder
         build_fixtures()
         saved = cc.peer_sessions, cc.running_claude_processes
-        cc.peer_sessions = lambda: {"s-closed": {"name": "b", "pid": 1}}
+        cc.peer_sessions = lambda: {"s-closed": {"name": "b", "pid": 1, "pids": [1]}}
         cc.running_claude_processes = lambda: [(1, str(WORK), ["claude", "--resume", "s-midtask"]), (2, str(WORK), ["claude"])]
         try:
             rows = by_id(cc.collect(True, 10 ** 6))

@@ -991,7 +991,8 @@ def resumed_ids(procs):
 
 
 def peer_sessions():
-    """Claude Code's own registry (~/.claude/sessions/<pid>.json): session id -> {name, pid} for live processes.
+    """Claude Code's own registry (~/.claude/sessions/<pid>.json): session id -> {name, pid, pids} for live
+    processes. pids: every process running it (two can share a session); pid: one of them, to focus.
     The name is what other sessions use to message it (SendMessage / ListAgents)."""
     out = {}
     for f in (CLAUDE_DIR / "sessions").glob("*.json"):
@@ -1002,7 +1003,9 @@ def peer_sessions():
         # the format is Claude Code's and undocumented: skip records that don't look as expected.
         # procStart is required: without it pid_alive accepts any process that reused the pid
         if isinstance(sid, str) and sid and isinstance(pid, int) and start and pid_alive(pid, start):
-            out[sid] = {"name": name if isinstance(name, str) else None, "pid": pid}
+            e = out.setdefault(sid, {"name": None, "pid": pid, "pids": []})
+            e["pids"].append(pid)
+            e["name"] = e["name"] or (name if isinstance(name, str) else None)
     return out
 
 
@@ -1091,7 +1094,8 @@ def collect(include_all=False, days=DEFAULT_DAYS):
 
     # one session per process: the registry knows what a process runs now, its --resume argument
     # only what it started on (/resume switches sessions in place)
-    reg_pids = {p["pid"] for p in peers.values()}
+    owner = {pid: sid for sid, p in peers.items() for pid in p["pids"]}  # what each registered process runs now
+    reg_pids = set(owner)
     resumed = resumed_ids([p for p in procs if p[0] not in reg_pids])
     guessed_live = guess_live_sessions(sessions, hooks, procs, resumed | set(peers), reg_pids)
 
@@ -1099,8 +1103,9 @@ def collect(include_all=False, days=DEFAULT_DAYS):
     rows, cutoff = [], time.time() - days * 86400
     for sid, s in sessions.items():
         hook = hooks.get(sid)
+        # a hook whose process the registry says now runs another session (/resume) is stale
         hook_live = bool(hook and hook.get("pid")) and pid_alive(hook["pid"], hook.get("pid_start")) \
-            and hook.get("status") != "ended"
+            and hook.get("status") != "ended" and owner.get(hook["pid"], sid) == sid
         if hook and hook.get("pid"):
             # a live `--resume <id>` wins: another process sharing the session may have ended it
             alive = hook_live or sid in peers or sid in resumed
