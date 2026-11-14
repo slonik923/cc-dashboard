@@ -1074,13 +1074,17 @@ def collect(include_all=False, days=DEFAULT_DAYS):
     rows, cutoff = [], time.time() - days * 86400
     for sid, s in sessions.items():
         hook = hooks.get(sid)
+        hook_live = bool(hook and hook.get("pid")) and pid_alive(hook["pid"], hook.get("pid_start")) \
+            and hook.get("status") != "ended"
         if hook and hook.get("pid"):
             # a live `--resume <id>` wins: another process sharing the session may have ended it
-            alive = (pid_alive(hook["pid"], hook.get("pid_start")) and hook.get("status") != "ended") or sid in resumed
+            alive = hook_live or sid in resumed
             s["live_source"] = "hook"
         else:
             alive = sid in resumed or sid in guessed_live
             s["live_source"] = "guess"
+        if sid in resumed and not hook_live:
+            hook = None  # another process resumed it; the ended one's status (ended, permission) isn't the live one's
         s["alive"] = alive
         s["mark"] = marks.get(sid) or {}
         s["pr_details"] = pr_details(s, prc)

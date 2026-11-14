@@ -368,6 +368,21 @@ class HookTest(unittest.TestCase):
         finally:
             cc.running_claude_processes = saved
 
+    def test_resumed_session_isnt_held_back_by_the_ended_hook(self):
+        build_fixtures()
+        sid = "s-midtask"  # its transcript ends on a tool entry, so an open session isn't idle
+        self.run_hook({"session_id": sid, "hook_event_name": "UserPromptSubmit", "cwd": str(WORK)})
+        self.run_hook({"session_id": sid, "hook_event_name": "SessionEnd", "reason": "exit"})
+        saved = cc.running_claude_processes
+        cc.running_claude_processes = lambda: [(2, str(WORK), ["claude", "--resume", sid])]
+        try:
+            row = by_id(cc.collect(True, 10 ** 6))[sid]
+            self.assertTrue(row["alive"])
+            self.assertNotEqual(row["state"], "idle")  # what the ended hook's status would give
+            self.assertEqual(row["state"], cc.classify(dict(row), None, True))  # as if there were no hook record
+        finally:
+            cc.running_claude_processes = saved
+
     def test_bad_payloads_ignored(self):
         for p in ([1], "x", {"session_id": "../../etc"}, {}):
             self.run_hook(p)
