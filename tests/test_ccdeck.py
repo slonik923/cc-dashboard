@@ -791,7 +791,7 @@ class ServerTest(unittest.TestCase):
     def test_resume_of_an_open_session_never_starts_a_second_one(self):
         saved = cc.peer_sessions, cc.focus_terminal, cc.open_terminal
         opened = []
-        cc.peer_sessions = lambda: {"s-closed": {"name": "work-2d", "pid": 1}}
+        cc.peer_sessions = lambda: {"s-closed": {"name": "work-2d", "pid": 1, "pids": [1]}}
         cc.open_terminal = lambda *a: opened.append(a) or "xterm"
         try:
             cc.focus_terminal = lambda pid: "gnome-terminal"
