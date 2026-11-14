@@ -22,6 +22,7 @@ ID is a row number from the last list or any unique prefix of a session id.
 """
 
 import argparse
+import fcntl
 import importlib.util
 import hashlib
 import json
@@ -39,7 +40,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
-VERSION = "0.8.1"
+VERSION = "0.9.0"
 HOME = Path.home()
 CLAUDE_DIR = Path(os.environ.get("CLAUDE_CONFIG_DIR", HOME / ".claude"))
 PROJECTS_DIR = CLAUDE_DIR / "projects"
@@ -54,6 +55,7 @@ LAST_LIST_FILE = DATA_DIR / "last-list.json"
 TOKEN_FILE = DATA_DIR / "token"
 DAEMON_FILE = DATA_DIR / "daemon.json"
 CONFIG_FILE = DATA_DIR / "config.json"
+INBOX_DIR = DATA_DIR / "inbox"  # notifications not acted on yet, one file each
 REQ_DIR = DATA_DIR / "requests"
 SCRIPT = Path(__file__).resolve()
 WEB_DIR = SCRIPT.parent / "web"
@@ -1215,7 +1217,46 @@ def notify_enabled(channel):
     return notify_settings(load_json(CONFIG_FILE, {})).get(channel, True) is not False
 
 
-def notify(title, body, urgent=False, sid=None):
+def inbox_add(sid, state, title, body):
+    """Keep a notification until it's acted on. One file each, so the dashboard, hooks and click helpers
+    never overwrite each other's changes."""
+    INBOX_DIR.mkdir(parents=True, exist_ok=True)
+    with open(INBOX_DIR / ".lock", "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)  # two hooks for one session at once must still leave one entry
+        for d in inbox_items():
+            if d["sid"] == sid:
+                inbox_clear(d["id"])  # one per session: the newest says what it needs now
+        nid = f"{int(time.time() * 1000)}-{secrets.token_hex(3)}"
+        save_json(INBOX_DIR / f"{nid}.json", {"id": nid, "sid": sid, "state": state, "title": title, "body": body, "ts": time.time()})
+    return nid
+
+
+def inbox_items():
+    items = []
+    for f in INBOX_DIR.glob("*.json"):
+        d = load_json(f, {})
+        if d.get("id") == f.stem and isinstance(d.get("sid"), str):
+            items.append(d)
+    return sorted(items, key=lambda d: d.get("ts") or 0, reverse=True)
+
+
+def inbox_clear(nid):
+    if isinstance(nid, str) and re.fullmatch(r"[\w-]+", nid):
+        (INBOX_DIR / f"{nid}.json").unlink(missing_ok=True)
+
+
+def inbox_sweep(rows):
+    """Drop notifications that were acted on: the session left the state that raised it (you sent a
+    message, answered the permission prompt, the session closed), or the session is gone."""
+    cur = {r["id"]: r["state"] for r in rows}
+    for d in inbox_items():
+        if cur.get(d["sid"]) != d.get("state"):
+            inbox_clear(d["id"])
+
+
+def notify(title, body, urgent=False, sid=None, state=None, text=None):
+    """body: the short line for the desktop popup; text: the whole message, kept in the inbox."""
+    nid = inbox_add(sid, state, title, text or body) if sid else None
     if not notify_enabled("desktop"):
         return
     if IS_MAC:
@@ -1229,7 +1270,8 @@ def notify(title, body, urgent=False, sid=None):
         return
     if sid and importlib.util.find_spec("gi"):
         # a detached helper sends it and waits for a click, which goes to the session's tab
-        cmd = [sys.executable, str(Path(__file__).resolve()), "notify-click", sid] + (["--urgent"] if urgent else []) + ["--", title, body]
+        cmd = ([sys.executable, str(Path(__file__).resolve()), "notify-click", sid, "--id", nid]
+               + (["--urgent"] if urgent else []) + ["--", title, body])
     elif shutil.which("notify-send"):
         cmd = ["notify-send", "-a", "Claude Code", "-i", "utilities-terminal"] + (["-u", "critical"] if urgent else []) + [title, body]
     else:
@@ -1406,8 +1448,9 @@ def focus_terminal(pid, token=None):
     return None
 
 
-def notification_click(title, body, urgent):
+def notification_click(title, body, urgent, wanted=lambda: True):
     """Show a desktop notification with a default action. Returns (clicked, activation token or None).
+    wanted() is polled; once it's False (acted on elsewhere) the notification is withdrawn.
     GNOME sends the click only to the connection that sent the notification (so not `gdbus monitor`),
     and its proxy makes notify-send drop actions, so this holds one connection through PyGObject.
     The token is what lets the terminal raise its window on Wayland."""
@@ -1436,6 +1479,15 @@ def notification_click(title, body, urgent):
         GLib.Variant("(susssasa{sv}i)", ("Claude Code", 0, "utilities-terminal", title[:120], body[:300],
                                          ["default", "Go to tab"], hints, -1)),
         None, Gio.DBusCallFlags.NONE, -1, None).unpack()[0]
+    def poll():
+        if wanted():
+            return True
+        bus.call_sync("org.freedesktop.Notifications", "/org/freedesktop/Notifications", "org.freedesktop.Notifications",
+                      "CloseNotification", GLib.Variant("(u)", (state["id"],)), None, Gio.DBusCallFlags.NONE, -1, None)
+        loop.quit()
+        return False
+
+    GLib.timeout_add_seconds(2, poll)
     GLib.timeout_add_seconds(4 * 3600, loop.quit)  # shortcut: a notification left in the tray stops being clickable after 4h
     loop.run()
     return state["clicked"], state["token"]
@@ -1444,10 +1496,14 @@ def notification_click(title, body, urgent):
 def cmd_notify_click(args):
     """Detached helper: show the notification and, if it's clicked, go to the session's terminal tab."""
     try:
-        clicked, token = notification_click(args.title, args.body, args.urgent)
+        entry = INBOX_DIR / f"{args.id}.json" if args.id else None
+        clicked, token = notification_click(args.title, args.body, args.urgent,
+                                            (lambda: entry.exists()) if entry else (lambda: True))
     except Exception as e:  # GLib.Error, no session bus, …: the notification is lost, say why
         print(f"ccdeck notify-click: {e}", file=sys.stderr)
         return
+    if clicked:
+        inbox_clear(args.id)  # clicking it is acting on it
     if clicked and (peer := peer_sessions().get(args.sid)):
         focus_terminal(peer["pid"], token)
 
@@ -1520,6 +1576,7 @@ class Dashboard:
             "gh": bool(shutil.which("gh")), "hooks": hooks_active(),
             "default_days": DEFAULT_DAYS, "port": self.port, "gh_install": GH_INSTALL,
             "reviews": review_requests(sessions),
+            "notifications": inbox_items(),
         }
         etag = hashlib.sha1(json.dumps(snap, sort_keys=True).encode()).hexdigest()[:16]
         snap["generated"] = time.time()
@@ -1529,6 +1586,7 @@ class Dashboard:
         return rows
 
     def _notify_changes(self, rows):
+        inbox_sweep(rows)
         cur = {r["id"]: r["state"] for r in rows}
         prev, self.prev_states = self.prev_states, cur
         if prev is None:
@@ -1539,8 +1597,9 @@ class Dashboard:
                 continue
             if st == "idle" and before != "working":
                 continue
-            body = r.get("hook_message") or one_line(r.get("last_text"), 160)
-            notify(f"{STATES[st][1]} · {title_of(r)[:60]}", body, urgent=r["group"] == "needs", sid=r["id"])
+            text = r.get("hook_message") or r.get("last_text") or ""
+            notify(f"{STATES[st][1]} · {title_of(r)[:60]}", one_line(text, 160), urgent=r["group"] == "needs",
+                   sid=r["id"], state=st, text=text)
 
     def heartbeat(self):
         try:
@@ -1610,6 +1669,12 @@ class Dashboard:
 
     def handle_action(self, body):
         sid, action = body.get("id"), body.get("action")
+        if action in ("dismiss", "dismiss_all"):
+            for d in inbox_items():
+                if action == "dismiss_all" or d["id"] == body.get("nid"):
+                    inbox_clear(d["id"])
+            self.refresh()
+            return 200, {"ok": True}
         s = self.find(sid) if isinstance(sid, str) else None
         if not s:
             return 404, {"error": "unknown session"}
@@ -2051,7 +2116,8 @@ def cmd_hook(_args):
             state["status"] = "idle"
         if (state.get("status") != prev and state.get("status") in ("permission", "question")
                 and not daemon_running()):
-            notify(f"Claude needs you · {short_path(state.get('cwd'))}", msg or ntype, urgent=True, sid=sid)
+            notify(f"Claude needs you · {short_path(state.get('cwd'))}", msg or ntype, urgent=True, sid=sid,
+                   state=state.get("status"))
     save_json(path, state)
     close_requests(sid, event, data)
     if event == "PermissionRequest":
@@ -2598,6 +2664,7 @@ def main():
     s.add_argument("title")
     s.add_argument("body")
     s.add_argument("--urgent", action="store_true")
+    s.add_argument("--id", help="the inbox entry; withdrawn when it's gone")
     args = p.parse_args()
 
     handlers = {
