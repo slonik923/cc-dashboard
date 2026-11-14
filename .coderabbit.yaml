@@ -1,5 +1,5 @@
 # yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
-# CodeRabbit. Shared review rules are in .gemini/styleguide.md.
+# CodeRabbit. Shared review rules are in .github/styleguide.md.
 language: en-US
 reviews:
   profile: chill
@@ -41,5 +41,5 @@ knowledge_base:
   code_guidelines:
     enabled: true
     filePatterns:
-      - ".gemini/styleguide.md"
+      - ".github/styleguide.md"
       - "CLAUDE.md"

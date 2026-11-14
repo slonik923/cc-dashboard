@@ -185,13 +185,13 @@ The tests run against a throwaway `HOME` with synthetic transcripts and a fake `
 
 **Screenshots for PRs.** `scripts/demo_data.py` writes a demo `HOME` of made-up sessions, so you can run any version of ccdeck on the same data: `HOME=/tmp/demo PATH=/tmp/demo/bin:$PATH python3 ccdeck serve --port 7800`. PRs that change the dashboard show it before and after on that data; `CLAUDE.md` has the details.
 
-**AI review.** Pull requests get automatic reviews from Gemini Code Assist and CodeRabbit (both free for public repos). Their settings are in `.gemini/` and `.coderabbit.yaml`, and the rules they review against are in `.gemini/styleguide.md`. Ask for a re-review with `/gemini review` or `@coderabbitai review`.
+**AI review.** Pull requests get automatic reviews from CodeRabbit (free for public repos). Its settings are in `.coderabbit.yaml`, and the rules it reviews against are in `.github/styleguide.md`. Ask for a re-review with `@coderabbitai review`.
 
 **Merging into `main`** needs all of these:
 - the CI jobs pass;
 - every review conversation is resolved, so an open comment (critical or not) blocks the merge;
-- the **AI review gate** check passes (`.github/workflows/ai-review.yml`): CodeRabbit isn't requesting changes, and Gemini has reviewed the PR;
-- the **CodeRabbit** check passes, which means CodeRabbit has reviewed the latest commit. Gemini reviews when a PR opens; comment `/gemini review` to ask again after bigger changes.
+- the **AI review gate** check passes (`.github/workflows/ai-review.yml`): CodeRabbit isn't requesting changes;
+- the **CodeRabbit** check passes, which means CodeRabbit has reviewed the latest commit.
 
 One gap: when CodeRabbit is rate-limited or skips a review, its check ends neutral or skipped, and GitHub counts both as passing. Before merging, look at the CodeRabbit check on the PR's last commit; if it says skipped or rate-limited, comment `@coderabbitai review` and wait for it. The gate can't enforce this: CodeRabbit's check finishes after the gate runs and posts no review when it finds nothing, so nothing would re-run a stricter gate.
 

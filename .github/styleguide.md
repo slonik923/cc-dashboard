@@ -1,6 +1,6 @@
 # ccdeck review guide
 
-Used by AI reviewers (Gemini Code Assist reads this file; CodeRabbit is pointed at it). Humans welcome too.
+Used by CodeRabbit (`.coderabbit.yaml` points it here). Humans welcome too.
 
 ccdeck is a local dashboard for Claude Code sessions: one Python script (`ccdeck`), a page (`web/index.html`, `web/ccdeck.css`), Claude Code plugin files (`.claude-plugin/`, `hooks/`, `skills/`) and tests (`tests/test_ccdeck.py`). It runs on Linux and macOS.
 
