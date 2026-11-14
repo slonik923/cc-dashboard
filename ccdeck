@@ -22,6 +22,7 @@ ID is a row number from the last list or any unique prefix of a session id.
 """
 
 import argparse
+import importlib.util
 import hashlib
 import json
 import os
@@ -38,7 +39,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
-VERSION = "0.7.0"
+VERSION = "0.8.0"
 HOME = Path.home()
 CLAUDE_DIR = Path(os.environ.get("CLAUDE_CONFIG_DIR", HOME / ".claude"))
 PROJECTS_DIR = CLAUDE_DIR / "projects"
@@ -1198,8 +1199,18 @@ def applescript_str(text):
     return '"' + str(text).replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ") + '"'
 
 
-def notify(title, body, urgent=False):
+NOTIFY_CHANNELS = ("desktop",)  # one switch per channel in config.json; terminal, app and web go here later
+
+
+def notify_enabled(channel):
+    """CCDECK_NOTIFY=0 turns every channel off; otherwise config.json's notifications.<channel> (default on)."""
     if os.environ.get("CCDECK_NOTIFY", "1") == "0":
+        return False
+    return load_json(CONFIG_FILE, {}).get("notifications", {}).get(channel, True) is not False
+
+
+def notify(title, body, urgent=False, sid=None):
+    if not notify_enabled("desktop"):
         return
     if IS_MAC:
         script = f"display notification {applescript_str(body[:200])} with title {applescript_str(title[:120])}"
@@ -1210,13 +1221,15 @@ def notify(title, body, urgent=False):
         except OSError:
             pass
         return
-    if not shutil.which("notify-send"):
+    if sid and importlib.util.find_spec("gi"):
+        # a detached helper sends it and waits for a click, which goes to the session's tab
+        cmd = [sys.executable, str(Path(__file__).resolve()), "notify-click", sid] + (["--urgent"] if urgent else []) + ["--", title, body]
+    elif shutil.which("notify-send"):
+        cmd = ["notify-send", "-a", "Claude Code", "-i", "utilities-terminal"] + (["-u", "critical"] if urgent else []) + [title, body]
+    else:
         return
-    cmd = ["notify-send", "-a", "Claude Code", "-i", "utilities-terminal"]
-    if urgent:
-        cmd += ["-u", "critical"]
     try:
-        subprocess.Popen(cmd + [title, body], env=desktop_env(),
+        subprocess.Popen(cmd, env=desktop_env(), start_new_session=True,
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except OSError:
         pass
@@ -1290,8 +1303,20 @@ def proc_tty(pid):
     return "/dev/" + tty if tty and tty not in ("?", "??") else None
 
 
-def focus_commands(env, tty):
-    """[(label, [commands...])] that bring the terminal tab of a process to the front, best first."""
+def gnome_terminal_window():
+    """D-Bus path of any open gnome-terminal window, or None."""
+    try:
+        out = subprocess.run(["gdbus", "introspect", "--session", "-d", "org.gnome.Terminal", "-o", "/org/gnome/Terminal/window"],
+                             capture_output=True, text=True, timeout=5, env=desktop_env()).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    m = re.search(r"node (\d+)", out)
+    return f"/org/gnome/Terminal/window/{m.group(1)}" if m else None
+
+
+def focus_commands(env, tty, token=None):
+    """[(label, [commands...])] that bring the terminal tab of a process to the front, best first.
+    token: a Wayland activation token (from a notification click), which lets GNOME raise the window."""
     out = []
     pane = env.get("TMUX_PANE")
     if pane:
@@ -1307,7 +1332,14 @@ def focus_commands(env, tty):
     m = re.fullmatch(r"/org/gnome/Terminal/screen/([0-9a-f_]{36})", env.get("GNOME_TERMINAL_SCREEN") or "")
     if m and shutil.which("gdbus"):
         # gnome-terminal's GNOME Shell search provider: activating a result switches to that tab, Wayland included
-        out.append(("gnome-terminal", [["gdbus", "call", "--session", "-d", "org.gnome.Terminal",
+        cmds = []
+        win = token and re.fullmatch(r"[\w/.:+=-]+", token) and gnome_terminal_window()
+        if win:
+            # without the token GNOME says "Terminal is ready" instead of raising the window; a harmless
+            # window action carrying it hands it to gnome-terminal for the present that follows
+            cmds.append(["gdbus", "call", "--session", "-d", "org.gnome.Terminal", "-o", win, "-m", "org.gtk.Actions.Activate",
+                         "--", "find-clear", "[]", f"{{'desktop-startup-id': <'{token}'>, 'activation-token': <'{token}'>}}"])
+        out.append(("gnome-terminal", cmds + [["gdbus", "call", "--session", "-d", "org.gnome.Terminal",
                                         "-o", "/org/gnome/Terminal/SearchProvider",
                                         "-m", "org.gnome.Shell.SearchProvider2.ActivateResult",
                                         m.group(1).replace("_", "-"), "[]", "0"]]))
@@ -1343,13 +1375,13 @@ def tmux_pane_of_tty(tty):
     return next((pane for t, _, pane in (line.partition(" ") for line in out.splitlines()) if t == tty), None)
 
 
-def focus_terminal(pid):
+def focus_terminal(pid, token=None):
     """Switch to the terminal tab running pid. Returns the terminal's name, or None if we can't."""
     env = proc_environ(pid) if USE_PROC else {}
     tty = proc_tty(pid) if (IS_MAC or not USE_PROC) else None
     if not USE_PROC and (pane := tmux_pane_of_tty(tty)):
         env = {"TMUX_PANE": pane}  # no /proc to read TMUX_PANE from: the pane that owns the tty
-    for label, cmds in focus_commands(env, tty if IS_MAC else None):
+    for label, cmds in focus_commands(env, tty if IS_MAC else None, token):
         try:
             rs = [subprocess.run(c, capture_output=True, text=True, timeout=10, env=desktop_env()) for c in cmds]
         except (OSError, subprocess.SubprocessError):
@@ -1359,6 +1391,52 @@ def focus_terminal(pid):
         if all(r.returncode == 0 for r in rs) and (cmds[0][0] != "osascript" or rs[0].stdout.strip() == "ok"):
             return label
     return None
+
+
+def notification_click(title, body, urgent):
+    """Show a desktop notification with a default action. Returns (clicked, activation token or None).
+    GNOME sends the click only to the connection that sent the notification (so not `gdbus monitor`),
+    and its proxy makes notify-send drop actions, so this holds one connection through PyGObject.
+    The token is what lets the terminal raise its window on Wayland."""
+    from gi.repository import Gio, GLib  # optional; notify() checks it's there
+    bus, loop, state = Gio.bus_get_sync(Gio.BusType.SESSION), GLib.MainLoop(), {"id": None, "clicked": False, "token": None}
+
+    def on_signal(_conn, _sender, _path, _iface, name, params):
+        nid, *rest = params.unpack()
+        # a click sends ActivationToken, ActionInvoked and NotificationClosed, often in one batch,
+        # so Closed may still arrive after quit(): it ends the wait but never undoes a click
+        if nid != state["id"]:
+            return
+        if name == "ActivationToken":
+            state["token"] = rest[0]
+        elif name == "ActionInvoked" and rest == ["default"]:
+            state["clicked"] = True
+            loop.quit()
+        elif name == "NotificationClosed":
+            loop.quit()
+
+    bus.signal_subscribe("org.freedesktop.Notifications", "org.freedesktop.Notifications", None,
+                         "/org/freedesktop/Notifications", None, Gio.DBusSignalFlags.NONE, on_signal)
+    hints = {"urgency": GLib.Variant("y", 2 if urgent else 1)}
+    state["id"] = bus.call_sync(
+        "org.freedesktop.Notifications", "/org/freedesktop/Notifications", "org.freedesktop.Notifications", "Notify",
+        GLib.Variant("(susssasa{sv}i)", ("Claude Code", 0, "utilities-terminal", title[:120], body[:300],
+                                         ["default", "Go to tab"], hints, -1)),
+        None, Gio.DBusCallFlags.NONE, -1, None).unpack()[0]
+    GLib.timeout_add_seconds(4 * 3600, loop.quit)  # shortcut: a notification left in the tray stops being clickable after 4h
+    loop.run()
+    return state["clicked"], state["token"]
+
+
+def cmd_notify_click(args):
+    """Detached helper: show the notification and, if it's clicked, go to the session's terminal tab."""
+    try:
+        clicked, token = notification_click(args.title, args.body, args.urgent)
+    except Exception as e:  # GLib.Error, no session bus, …: the notification is lost, say why
+        print(f"ccdeck notify-click: {e}", file=sys.stderr)
+        return
+    if clicked and (peer := peer_sessions().get(args.sid)):
+        focus_terminal(peer["pid"], token)
 
 
 def open_path(target):
@@ -1449,7 +1527,7 @@ class Dashboard:
             if st == "idle" and before != "working":
                 continue
             body = r.get("hook_message") or one_line(r.get("last_text"), 160)
-            notify(f"{STATES[st][1]} · {title_of(r)[:60]}", body, urgent=r["group"] == "needs")
+            notify(f"{STATES[st][1]} · {title_of(r)[:60]}", body, urgent=r["group"] == "needs", sid=r["id"])
 
     def heartbeat(self):
         try:
@@ -1960,7 +2038,7 @@ def cmd_hook(_args):
             state["status"] = "idle"
         if (state.get("status") != prev and state.get("status") in ("permission", "question")
                 and not daemon_running()):
-            notify(f"Claude needs you · {short_path(state.get('cwd'))}", msg or ntype, urgent=True)
+            notify(f"Claude needs you · {short_path(state.get('cwd'))}", msg or ntype, urgent=True, sid=sid)
     save_json(path, state)
     close_requests(sid, event, data)
     if event == "PermissionRequest":
@@ -2141,6 +2219,23 @@ def cmd_approvals(args):
           + (" (CCDECK_APPROVALS overrides the setting)" if "CCDECK_APPROVALS" in os.environ else ""))
     if on:
         print("Permission prompts can now be allowed or denied in the dashboard; the terminal still works too.")
+
+
+def cmd_notifications(args):
+    words = args.words
+    if words and words[-1] not in ("on", "off"):
+        sys.exit("usage: ccdeck notifications [CHANNEL] [on|off]")
+    if words:
+        channels = words[:-1] or list(NOTIFY_CHANNELS)
+        if any(c not in NOTIFY_CHANNELS for c in channels):
+            sys.exit(f"Unknown channel; channels: {', '.join(NOTIFY_CHANNELS)}")
+        cfg = load_json(CONFIG_FILE, {})
+        cfg.setdefault("notifications", {}).update({c: words[-1] == "on" for c in channels})
+        save_json(CONFIG_FILE, cfg)
+    for c in NOTIFY_CHANNELS:
+        print(f"{c} notifications: {'on' if notify_enabled(c) else 'off'}")
+    if os.environ.get("CCDECK_NOTIFY") == "0":
+        print("(CCDECK_NOTIFY=0 turns them all off, whatever the setting)")
 
 
 def autostart_daemon(force=False):
@@ -2480,14 +2575,23 @@ def main():
     sub.add_parser("uninstall", help="remove hooks, service and launcher")
     s = sub.add_parser("approvals", help="allow/deny permission prompts from the dashboard (opt-in)")
     s.add_argument("mode", nargs="?", choices=["on", "off", "status"], default="status")
+    s = sub.add_parser("notifications", help="turn notifications on or off, all or one channel ("
+                       + ", ".join(NOTIFY_CHANNELS) + ")")
+    s.add_argument("words", nargs="*", metavar="[CHANNEL] [on|off]")
     sub.add_parser("hook", help=argparse.SUPPRESS)
+    s = sub.add_parser("notify-click", help=argparse.SUPPRESS)
+    s.add_argument("sid")
+    s.add_argument("title")
+    s.add_argument("body")
+    s.add_argument("--urgent", action="store_true")
     args = p.parse_args()
 
     handlers = {
         None: cmd_list, "list": cmd_list, "show": cmd_show, "resume": cmd_resume,
         "done": cmd_mark("done"), "undone": cmd_mark("undone"), "park": cmd_mark("park"),
         "unpark": cmd_mark("unpark"), "note": cmd_mark("note"), "serve": cmd_serve,
-        "open": cmd_open, "install": cmd_install, "approvals": cmd_approvals, "uninstall": cmd_uninstall, "hook": cmd_hook,
+        "open": cmd_open, "install": cmd_install, "approvals": cmd_approvals, "notifications": cmd_notifications, "uninstall": cmd_uninstall, "hook": cmd_hook,
+        "notify-click": cmd_notify_click,
     }
     handlers[args.cmd](args)
 

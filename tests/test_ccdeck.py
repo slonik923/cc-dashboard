@@ -805,6 +805,68 @@ class ServerTest(unittest.TestCase):
         finally:
             cc.peer_sessions, cc.focus_terminal, cc.open_terminal = saved
 
+    def test_notification_click_goes_to_the_sessions_tab(self):
+        saved = cc.peer_sessions, cc.focus_terminal, cc.notification_click, sys.argv
+        focused = []
+        cc.peer_sessions = lambda: {"s-closed": {"name": "work-2d", "pid": 42}}
+        cc.focus_terminal = lambda pid, token: focused.append((pid, token))
+        def boom(*a):
+            raise RuntimeError("no session bus")
+        try:
+            for click, sid in ((lambda *a: (True, "tok"), "s-closed"), (lambda *a: (False, None), "s-closed"),
+                               (lambda *a: (True, None), "gone"), (boom, "s-closed")):
+                cc.notification_click = click
+                sys.argv = ["ccdeck", "notify-click", sid, "--", "-title", "body"]
+                cc.main()
+            self.assertEqual(focused, [(42, "tok")])
+        finally:
+            cc.peer_sessions, cc.focus_terminal, cc.notification_click, sys.argv = saved
+
+    def test_activation_token_goes_to_gnome_terminal_first(self):
+        saved = cc.gnome_terminal_window
+        cc.gnome_terminal_window = lambda: "/org/gnome/Terminal/window/3"
+        env = {"GNOME_TERMINAL_SCREEN": "/org/gnome/Terminal/screen/" + "a" * 8 + "_" + "b" * 4 + "_" + "c" * 4 + "_" + "d" * 4 + "_" + "e" * 12}
+        try:
+            if not shutil.which("gdbus"):
+                self.skipTest("needs gdbus")
+            (label, cmds), = cc.focus_commands(env, None, "gnome-shell//1-2-host_TIME3")
+            self.assertEqual(label, "gnome-terminal")
+            self.assertEqual(cmds[0][cmds[0].index("-o") + 1], "/org/gnome/Terminal/window/3")
+            self.assertIn("<'gnome-shell//1-2-host_TIME3'>", cmds[0][-1])
+            self.assertIn("ActivateResult", " ".join(cmds[1]))
+            (_, cmds), = cc.focus_commands(env, None, "x'] evil")  # not token-shaped: no window call
+            self.assertEqual(len(cmds), 1)
+            (_, cmds), = cc.focus_commands(env, None)
+            self.assertEqual(len(cmds), 1)
+        finally:
+            cc.gnome_terminal_window = saved
+
+
+class NotificationSettingTest(unittest.TestCase):
+    def setUp(self):
+        self.env = os.environ.pop("CCDECK_NOTIFY", None)
+        cc.CONFIG_FILE.unlink(missing_ok=True)
+
+    def tearDown(self):
+        os.environ["CCDECK_NOTIFY"] = self.env or "0"
+        cc.CONFIG_FILE.unlink(missing_ok=True)
+
+    def run_cmd(self, *words):
+        cc.cmd_notifications(type("A", (), {"words": list(words)}))
+
+    def test_on_off_per_channel_and_env_override(self):
+        self.assertTrue(cc.notify_enabled("desktop"))  # default on
+        self.run_cmd("desktop", "off")
+        self.assertFalse(cc.notify_enabled("desktop"))
+        self.run_cmd("on")  # all channels
+        self.assertTrue(cc.notify_enabled("desktop"))
+        os.environ["CCDECK_NOTIFY"] = "0"
+        self.assertFalse(cc.notify_enabled("desktop"))
+        with self.assertRaises(SystemExit):
+            self.run_cmd("pager", "on")
+        with self.assertRaises(SystemExit):
+            self.run_cmd("maybe")
+
 
 class PsProcessTest(unittest.TestCase):
     """The macOS code path (no /proc): process facts from one cached `ps` snapshot."""
