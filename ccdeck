@@ -1291,7 +1291,9 @@ def focus_commands(env, tty):
     """[(label, [commands...])] that bring the terminal tab of a process to the front, best first."""
     out = []
     pane = env.get("TMUX_PANE")
-    if pane and shutil.which("tmux"):
+    if pane:
+        if not shutil.which("tmux"):
+            return out  # GNOME_TERMINAL_SCREEN would name the tab that started the tmux server, not this pane's
         sock = (env.get("TMUX") or "").split(",")[0]
         tmux = ["tmux"] + (["-S", sock] if sock else [])
         # shortcut: picks the window and pane, but doesn't raise the terminal the tmux client runs in
