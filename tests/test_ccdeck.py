@@ -824,7 +824,7 @@ class ServerTest(unittest.TestCase):
 
     def test_activation_token_goes_to_gnome_terminal_first(self):
         saved = cc.gnome_terminal_window
-        cc.gnome_terminal_window = lambda: "/org/gnome/Terminal/window/3"
+        cc.gnome_terminal_window = lambda: ("/org/gnome/Terminal/window/3", 2)
         env = {"GNOME_TERMINAL_SCREEN": "/org/gnome/Terminal/screen/" + "a" * 8 + "_" + "b" * 4 + "_" + "c" * 4 + "_" + "d" * 4 + "_" + "e" * 12}
         try:
             if not shutil.which("gdbus"):
@@ -833,6 +833,7 @@ class ServerTest(unittest.TestCase):
             self.assertEqual(label, "gnome-terminal")
             self.assertEqual(cmds[0][cmds[0].index("-o") + 1], "/org/gnome/Terminal/window/3")
             self.assertIn("<'gnome-shell//1-2-host_TIME3'>", cmds[0][-1])
+            self.assertEqual(cmds[0][cmds[0].index("--") + 1:-1], ["active-tab", "<2>"])  # the tab already active: no change
             self.assertIn("ActivateResult", " ".join(cmds[1]))
             (_, cmds), = cc.focus_commands(env, None, "x'] evil")  # not token-shaped: no window call
             self.assertEqual(len(cmds), 1)
