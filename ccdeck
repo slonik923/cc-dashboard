@@ -977,7 +977,20 @@ def classify(s, hook, alive):
     return "closed_midtask" if s.get("last_role") in ("user", "tool") else "closed"
 
 
-def guess_live_sessions(sessions, hooks, procs, argv_blob):
+def resumed_ids(procs):
+    """Session ids that running claude processes were started on (`--resume <id>`, `-r <id>`, `--resume=<id>`).
+    Only the resume argument counts: an id mentioned in a prompt doesn't make that session open."""
+    out = set()
+    for _, _, argv in procs:
+        for i, a in enumerate(argv):
+            if a in ("--resume", "-r") and i + 1 < len(argv):
+                out.add(argv[i + 1])
+            elif a.startswith("--resume="):
+                out.add(a.split("=", 1)[1])
+    return out
+
+
+def guess_live_sessions(sessions, hooks, procs, resumed):
     """Sessions no hook reports on: N claude processes in a folder => its N most recent sessions
     are taken as open, less the processes hooks or `--resume <id>` already account for."""
     per_cwd = {}
@@ -993,9 +1006,9 @@ def guess_live_sessions(sessions, hooks, procs, argv_blob):
         n = per_cwd[cwd]
         for s in ss:  # processes already explained
             h = hooks.get(s["id"])
-            if (h and h.get("pid") and pid_alive(h["pid"], h.get("pid_start"))) or s["id"] in argv_blob:
+            if (h and h.get("pid") and pid_alive(h["pid"], h.get("pid_start"))) or s["id"] in resumed:
                 n -= 1
-        rest = sorted((s for s in ss if not (hooks.get(s["id"]) or {}).get("pid") and s["id"] not in argv_blob),
+        rest = sorted((s for s in ss if not (hooks.get(s["id"]) or {}).get("pid") and s["id"] not in resumed),
                       key=lambda s: -s["last_ts"])
         live.update(s["id"] for s in rest[:max(0, n)])
     return live
@@ -1054,8 +1067,8 @@ def collect(include_all=False, days=DEFAULT_DAYS):
     procs = running_claude_processes()
     prc = pr_cache()
 
-    argv_blob = " ".join(" ".join(a) for _, _, a in procs)
-    guessed_live = guess_live_sessions(sessions, hooks, procs, argv_blob)
+    resumed = resumed_ids(procs)
+    guessed_live = guess_live_sessions(sessions, hooks, procs, resumed)
 
     resolve_linear(sessions)
     rows, cutoff = [], time.time() - days * 86400
@@ -1063,10 +1076,10 @@ def collect(include_all=False, days=DEFAULT_DAYS):
         hook = hooks.get(sid)
         if hook and hook.get("pid"):
             # a live `--resume <id>` wins: another process sharing the session may have ended it
-            alive = (pid_alive(hook["pid"], hook.get("pid_start")) and hook.get("status") != "ended") or sid in argv_blob
+            alive = (pid_alive(hook["pid"], hook.get("pid_start")) and hook.get("status") != "ended") or sid in resumed
             s["live_source"] = "hook"
         else:
-            alive = sid in argv_blob or sid in guessed_live
+            alive = sid in resumed or sid in guessed_live
             s["live_source"] = "guess"
         s["alive"] = alive
         s["mark"] = marks.get(sid) or {}

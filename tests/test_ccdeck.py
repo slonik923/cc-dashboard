@@ -686,15 +686,23 @@ class PsProcessTest(unittest.TestCase):
         self.assertFalse(cc.is_claude_cmd(["/bin/zsh"]))
 
 
+class ResumedIdsTest(unittest.TestCase):
+    def test_only_the_resume_argument_counts(self):
+        procs = [(1, "/w", ["claude", "--resume", "a"]), (2, "/w", ["claude", "-r", "b"]),
+                 (3, "/w", ["claude", "--resume=c"]), (4, "/w", ["claude", "-p", "look at session d and --resume"]),
+                 (5, "/w", ["claude", "summarize", "e"]), (6, "/w", ["claude", "--resume"])]
+        self.assertEqual(cc.resumed_ids(procs), {"a", "b", "c"})
+
+
 class GuessLiveTest(unittest.TestCase):
     def test_n_processes_mark_n_newest_sessions_open(self):
         mk = lambda sid, ts: {"id": sid, "cwd": "/w/app", "last_ts": ts}
         sessions = {k: mk(k, ts) for k, ts in [("old", 1), ("mid", 2), ("new", 3), ("resumed", 0)]}
         procs = [(1, "/w/app", ["claude"]), (2, "/w/app", ["claude"]), (3, "/w/app", ["claude", "--resume", "resumed"])]
-        live = cc.guess_live_sessions(sessions, {}, procs, "claude --resume resumed")
+        live = cc.guess_live_sessions(sessions, {}, procs, {"resumed"})
         self.assertEqual(live, {"new", "mid"})  # 3 processes, one of them is the resumed session
         hooks = {"new": {"pid": os.getpid(), "pid_start": cc.proc_start_time(os.getpid())}}
-        self.assertEqual(cc.guess_live_sessions(sessions, hooks, procs, "claude --resume resumed"), {"mid"})
+        self.assertEqual(cc.guess_live_sessions(sessions, hooks, procs, {"resumed"}), {"mid"})
 
 
 class MacDesktopTest(unittest.TestCase):
